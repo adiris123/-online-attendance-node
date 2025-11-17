@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Reports - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Top glassmorphic navigation -->
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">AMS</div>
+        <div class="brand-text">
+          <span class="brand-title">Reports</span>
+          <span class="brand-subtitle">Attendance insights & exports</span>
+        </div>
+      </div>
+      <nav class="nav-primary" aria-label="Primary navigation">
+        <a href="index.html" class="nav-pill">
+          <span class="nav-pill-icon">🔑</span>
+          <span class="nav-pill-label">Login</span>
+        </a>
+        <a href="dashboard.html" class="nav-pill">
+          <span class="nav-pill-icon">📊</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="students.html" class="nav-pill">
+          <span class="nav-pill-icon">👨‍🎓</span>
+          <span class="nav-pill-label">Students</span>
+        </a>
+        <a href="attendance.html" class="nav-pill">
+          <span class="nav-pill-icon">📝</span>
+          <span class="nav-pill-label">Attendance</span>
+        </a>
+        <a href="reports.html" class="nav-pill active">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="reports-main">
+    <!-- Header card -->
+    <section class="card glass reports-header">
+      <div class="reports-header-title">
+        <span class="reports-header-icon">📑</span>
+        <div>
+          <h1>Attendance Reports</h1>
+          <p class="reports-header-subtitle">Generate student-wise and class-wise attendance summaries.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="reports-grid">
+      <!-- Student Report Card -->
+      <section class="card glass reports-card" id="studentReportSection">
+        <header class="reports-card-header">
+          <div>
+            <h2><span class="reports-card-icon">👨‍🎓</span>Student Report</h2>
+            <p class="reports-card-subtitle">Select a class and student to view detailed attendance.</p>
+          </div>
+          <div class="reports-card-divider"></div>
+        </header>
+
+        <div class="reports-filters">
+          <label class="reports-filter">
+            <span>Class</span>
+            <select id="reportClassForStudent"></select>
+          </label>
+          <label class="reports-filter">
+            <span>Student</span>
+            <select id="reportStudent"></select>
+          </label>
+          <div class="reports-filter actions">
+            <button id="loadStudentReport" class="btn-pill">
+              <span class="btn-pill-icon">📄</span>
+              <span>Load Report</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="reports-downloads">
+          <button id="downloadStudentCsv" class="btn-pill">
+            <span class="btn-pill-icon">📥</span>
+            <span>Excel (CSV)</span>
+          </button>
+          <button id="downloadStudentPdf" class="btn-pill">
+            <span class="btn-pill-icon">📄</span>
+            <span>PDF</span>
+          </button>
+        </div>
+
+        <div class="table-wrapper glass-table">
+          <table class="students-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Class</th>
+                <th>Topic</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="studentReportTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Class Summary Card -->
+      <section class="card glass reports-card" id="classSummarySection">
+        <header class="reports-card-header">
+          <div>
+            <h2><span class="reports-card-icon">🏫</span>Class Summary</h2>
+            <p class="reports-card-subtitle">View attendance summary by class and export results.</p>
+          </div>
+          <div class="reports-card-divider"></div>
+        </header>
+
+        <div class="reports-filters">
+          <label class="reports-filter">
+            <span>Class</span>
+            <select id="summaryClass"></select>
+          </label>
+          <div class="reports-filter actions">
+            <button id="loadClassSummary" class="btn-pill">
+              <span class="btn-pill-icon">📊</span>
+              <span>Load Summary</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="reports-downloads">
+          <button id="downloadClassCsv" class="btn-pill">
+            <span class="btn-pill-icon">📥</span>
+            <span>Excel (CSV)</span>
+          </button>
+          <button id="downloadClassPdf" class="btn-pill">
+            <span class="btn-pill-icon">📄</span>
+            <span>PDF</span>
+          </button>
+        </div>
+
+        <div class="table-wrapper glass-table">
+          <table class="students-table">
+            <thead>
+              <tr>
+                <th>Student</th>
+                <th>Roll</th>
+                <th>Presents</th>
+                <th>Total</th>
+                <th>% Present</th>
+              </tr>
+            </thead>
+            <tbody id="classSummaryTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function authFetch(url, options = {}) {
+      const auth = getAuth();
+      if (!auth || !auth.token || !auth.user) {
+        window.location.href = 'index.html';
+        throw new Error('Not authenticated');
+      }
+
+      const headers = Object.assign({}, options.headers || {}, {
+        'x-auth-token': auth.token
+      });
+
+      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
+        if (res.status === 401) {
+          localStorage.removeItem('auth');
+          window.location.href = 'index.html';
+          throw new Error('Unauthorized');
+        }
+        if (res.status === 403) {
+          alert('Access denied for this operation.');
+          throw new Error('Forbidden');
+        }
+        return res;
+      });
+    }
+
+    const auth = getAuth();
+    if (!auth || !auth.user) {
+      window.location.href = 'index.html';
+    }
+
+    const currentRole = auth && auth.user ? auth.user.role : null;
+
+    // Students can only see their own report, not class summaries
+    if (currentRole === 'student') {
+      const summarySection = document.getElementById('classSummarySection');
+      if (summarySection) summarySection.style.display = 'none';
+    }
+
+    function buildDownloadUrl(pathname, params) {
+      const currentAuth = getAuth();
+      if (!currentAuth || !currentAuth.token) {
+        window.location.href = 'index.html';
+        return null;
+      }
+      const url = new URL(pathname, window.location.origin);
+      Object.keys(params || {}).forEach((key) => {
+        url.searchParams.append(key, params[key]);
+      });
+      url.searchParams.append('token', currentAuth.token);
+      return url.toString();
+    }
+
+    async function fetchClasses() {
+      const res = await authFetch('/api/classes');
+      const classes = await res.json();
+      return Array.isArray(classes) ? classes : [];
+    }
+
+    async function fetchStudentsByClass(classId) {
+      if (!classId) return [];
+      const res = await authFetch('/api/students?class_id=' + encodeURIComponent(classId));
+      const students = await res.json();
+      return Array.isArray(students) ? students : [];
+    }
+
+    async function loadClassDropdowns() {
+      const classes = await fetchClasses();
+      const reportClassSel = document.getElementById('reportClassForStudent');
+      const summaryClassSel = document.getElementById('summaryClass');
+      reportClassSel.innerHTML = '';
+      summaryClassSel.innerHTML = '';
+
+      classes.forEach((c) => {
+        const opt1 = document.createElement('option');
+        opt1.value = c.id;
+        opt1.textContent = c.name;
+        reportClassSel.appendChild(opt1);
+
+        const opt2 = document.createElement('option');
+        opt2.value = c.id;
+        opt2.textContent = c.name;
+        summaryClassSel.appendChild(opt2);
+      });
+
+      // After populating classes, always load students for the currently selected class
+      const initialClassId = reportClassSel.value || (classes[0] && classes[0].id);
+      if (initialClassId) {
+        reportClassSel.value = String(initialClassId);
+        await loadStudentsForClassReport(initialClassId);
+      } else {
+        // No classes: ensure student dropdown is cleared
+        const studentSel = document.getElementById('reportStudent');
+        studentSel.innerHTML = '';
+      }
+    }
+
+    async function loadStudentsForClassReport(classId) {
+      const students = await fetchStudentsByClass(classId);
+      const studentSel = document.getElementById('reportStudent');
+      studentSel.innerHTML = '';
+      (students || []).forEach((s) => {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = `${s.name} (${s.roll_number || 'No roll'})`;
+        studentSel.appendChild(opt);
+      });
+    }
+
+    document.getElementById('reportClassForStudent').addEventListener('change', async (e) => {
+      const classId = e.target.value;
+      if (!classId) {
+        const studentSel = document.getElementById('reportStudent');
+        studentSel.innerHTML = '';
+        return;
+      }
+      await loadStudentsForClassReport(classId);
+    });
+
+    document.getElementById('loadStudentReport').addEventListener('click', async () => {
+      const studentId = document.getElementById('reportStudent').value;
+      if (!studentId) return;
+
+      const res = await authFetch('/api/reports/by-student?student_id=' + encodeURIComponent(studentId));
+      const rows = await res.json();
+      const tbody = document.getElementById('studentReportTable');
+      tbody.innerHTML = '';
+      (rows || []).forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${r.date}</td>
+          <td>${r.class_name}</td>
+          <td>${r.topic || ''}</td>
+          <td>${r.status}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    });
+
+    document.getElementById('loadClassSummary').addEventListener('click', async () => {
+      const classId = document.getElementById('summaryClass').value;
+      if (!classId) return;
+
+      const res = await authFetch('/api/reports/summary-by-class?class_id=' + encodeURIComponent(classId));
+      const rows = await res.json();
+      const tbody = document.getElementById('classSummaryTable');
+      tbody.innerHTML = '';
+      (rows || []).forEach(r => {
+        const total = r.total || 0;
+        const presents = r.presents || 0;
+        const percent = total > 0 ? ((presents / total) * 100).toFixed(1) : '0.0';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${r.student_name}</td>
+          <td>${r.roll_number || ''}</td>
+          <td>${presents}</td>
+          <td>${total}</td>
+          <td>${percent}%</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    });
+
+    document.getElementById('downloadStudentCsv').addEventListener('click', () => {
+      const currentAuth = getAuth();
+      let studentId = null;
+      if (currentRole === 'student' && currentAuth && currentAuth.user && currentAuth.user.student_id) {
+        studentId = currentAuth.user.student_id;
+      } else {
+        studentId = document.getElementById('reportStudent').value;
+      }
+      if (!studentId) return;
+      const url = buildDownloadUrl('/api/reports/by-student/export', {
+        student_id: studentId,
+        format: 'csv',
+      });
+      if (url) window.location.href = url;
+    });
+
+    document.getElementById('downloadStudentPdf').addEventListener('click', () => {
+      const currentAuth = getAuth();
+      let studentId = null;
+      if (currentRole === 'student' && currentAuth && currentAuth.user && currentAuth.user.student_id) {
+        studentId = currentAuth.user.student_id;
+      } else {
+        studentId = document.getElementById('reportStudent').value;
+      }
+      if (!studentId) return;
+      const url = buildDownloadUrl('/api/reports/by-student/export', {
+        student_id: studentId,
+        format: 'pdf',
+      });
+      if (url) window.location.href = url;
+    });
+
+    const downloadClassButtonsVisible = document.getElementById('classSummarySection').style.display !== 'none';
+    if (downloadClassButtonsVisible) {
+      document.getElementById('downloadClassCsv').addEventListener('click', () => {
+        const classId = document.getElementById('summaryClass').value;
+        if (!classId) return;
+        const url = buildDownloadUrl('/api/reports/summary-by-class/export', {
+          class_id: classId,
+          format: 'csv',
+        });
+        if (url) window.location.href = url;
+      });
+
+      document.getElementById('downloadClassPdf').addEventListener('click', () => {
+        const classId = document.getElementById('summaryClass').value;
+        if (!classId) return;
+        const url = buildDownloadUrl('/api/reports/summary-by-class/export', {
+          class_id: classId,
+          format: 'pdf',
+        });
+        if (url) window.location.href = url;
+      });
+    }
+
+    (async () => {
+      // For students, auto-load their own report if we know their student_id
+      if (currentRole === 'student' && auth && auth.user && auth.user.student_id) {
+        const res = await authFetch('/api/reports/by-student?student_id=' + encodeURIComponent(auth.user.student_id));
+        const rows = await res.json();
+        const tbody = document.getElementById('studentReportTable');
+        tbody.innerHTML = '';
+        (rows || []).forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${r.date}</td>
+            <td>${r.class_name}</td>
+            <td>${r.topic || ''}</td>
+            <td>${r.status}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } else {
+        await loadClassDropdowns();
+      }
+    })();
+  </script>
+</body>
+</html>

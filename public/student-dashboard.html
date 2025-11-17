@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Student Dashboard - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Glassmorphic Student Navbar -->
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">S</div>
+        <div class="brand-text">
+          <span class="brand-title">Student Dashboard</span>
+          <span class="brand-subtitle">Your attendance performance &amp; daily overview</span>
+        </div>
+      </div>
+      <nav class="nav-primary" aria-label="Student navigation">
+        <a href="student-dashboard.html" class="nav-pill active">
+          <span class="nav-pill-icon">🏠</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="my-attendance.html" class="nav-pill">
+          <span class="nav-pill-icon">📅</span>
+          <span class="nav-pill-label">My Attendance</span>
+        </a>
+        <a href="report.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+        <button type="button" id="studentLogout" class="nav-pill">
+          <span class="nav-pill-icon">🚪</span>
+          <span class="nav-pill-label">Logout</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="student-main">
+    <!-- Header card -->
+    <section class="card glass student-header">
+      <div class="student-header-title">
+        <span class="student-header-avatar">👤</span>
+        <div>
+          <h1>Student Dashboard</h1>
+          <p id="studentWelcome" class="student-header-subtitle">Loading your profile...</p>
+          <p class="student-header-meta"><span id="studentName">&mdash;</span> • Class <span id="studentClass">&mdash;</span></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Overview widgets -->
+    <section class="student-grid-highlights">
+      <article class="card glass student-stat-card">
+        <div class="student-stat-icon">📊</div>
+        <div class="student-stat-content">
+          <div class="student-stat-value" id="studentAttendancePercent">92%</div>
+          <div class="student-stat-label">Total Attendance</div>
+        </div>
+      </article>
+      <article class="card glass student-stat-card">
+        <div class="student-stat-icon">✔️</div>
+        <div class="student-stat-content">
+          <div class="student-stat-value" id="studentPresentDays">120</div>
+          <div class="student-stat-label">Present Days</div>
+        </div>
+      </article>
+      <article class="card glass student-stat-card">
+        <div class="student-stat-icon">❌</div>
+        <div class="student-stat-content">
+          <div class="student-stat-value" id="studentAbsentDays">8</div>
+          <div class="student-stat-label">Absent Days</div>
+        </div>
+      </article>
+    </section>
+
+    <!-- Main grid: quick access + activity + calendar -->
+    <section class="student-grid-main">
+      <!-- Quick Access -->
+      <section class="card glass student-card">
+        <header class="student-card-header">
+          <div>
+            <h2><span class="student-card-icon">⚡</span>Quick Access</h2>
+            <p class="student-card-subtitle">Jump quickly to detailed views of your attendance.</p>
+          </div>
+          <div class="student-card-divider"></div>
+        </header>
+        <div class="student-quick-actions">
+          <a href="my-attendance.html" class="btn-pill">
+            <span class="btn-pill-icon">📅</span>
+            <span>View Full Attendance</span>
+          </a>
+          <a href="report.html" class="btn-pill">
+            <span class="btn-pill-icon">📄</span>
+            <span>Download Report (PDF)</span>
+          </a>
+          <a href="my-attendance.html#calendar" class="btn-pill">
+            <span class="btn-pill-icon">🗓</span>
+            <span>Attendance Calendar</span>
+          </a>
+        </div>
+      </section>
+
+      <!-- Recent Attendance Activity -->
+      <section class="card glass student-card">
+        <header class="student-card-header">
+          <div>
+            <h2><span class="student-card-icon">📆</span>Recent Attendance Activity</h2>
+            <p class="student-card-subtitle">Last few days of your attendance record.</p>
+          </div>
+          <div class="student-card-divider"></div>
+        </header>
+        <ul class="student-activity-list">
+          <li><span class="student-activity-status present">✔ Present</span><span class="student-activity-date">16 Nov</span></li>
+          <li><span class="student-activity-status present">✔ Present</span><span class="student-activity-date">15 Nov</span></li>
+          <li><span class="student-activity-status absent">❌ Absent</span><span class="student-activity-date">14 Nov</span></li>
+          <li><span class="student-activity-status present">✔ Present</span><span class="student-activity-date">13 Nov</span></li>
+          <li><span class="student-activity-status present">✔ Present</span><span class="student-activity-date">12 Nov</span></li>
+        </ul>
+      </section>
+
+      <!-- Attendance Calendar (Monthly Summary) -->
+      <section class="card glass student-card student-card-wide">
+        <header class="student-card-header">
+          <div>
+            <h2><span class="student-card-icon">🗓</span>Attendance Calendar</h2>
+            <p class="student-card-subtitle">Monthly overview of your presence and absences.</p>
+          </div>
+          <div class="student-card-divider"></div>
+        </header>
+        <div class="student-calendar-placeholder">
+          <div class="student-calendar-legend">
+            <span><span class="legend-dot present"></span>Present</span>
+            <span><span class="legend-dot absent"></span>Absent</span>
+            <span><span class="legend-dot leave"></span>Leave</span>
+          </div>
+          <div class="student-calendar-grid">
+            <!-- Static placeholder grid -->
+            <div class="day">1</div><div class="day present">2</div><div class="day present">3</div><div class="day absent">4</div><div class="day present">5</div><div class="day">6</div><div class="day">7</div>
+            <div class="day present">8</div><div class="day present">9</div><div class="day leave">10</div><div class="day present">11</div><div class="day present">12</div><div class="day">13</div><div class="day">14</div>
+            <div class="day present">15</div><div class="day present">16</div><div class="day absent">17</div><div class="day present">18</div><div class="day present">19</div><div class="day">20</div><div class="day">21</div>
+            <div class="day present">22</div><div class="day present">23</div><div class="day present">24</div><div class="day leave">25</div><div class="day present">26</div><div class="day">27</div><div class="day">28</div>
+            <div class="day present">29</div><div class="day present">30</div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    (function enforceStudent() {
+      const auth = getAuth();
+      const p = document.getElementById('studentWelcome');
+      if (!auth || !auth.user || !auth.token) {
+        p.textContent = 'Not logged in. Redirecting to login...';
+        setTimeout(() => (window.location.href = 'index.html'), 600);
+        return;
+      }
+
+      const role = auth.user.role;
+      if (role === 'admin') {
+        window.location.href = 'admin-dashboard.html';
+        return;
+      }
+      if (role === 'teacher') {
+        window.location.href = 'teacher-dashboard.html';
+        return;
+      }
+      if (role !== 'student') {
+        window.location.href = 'index.html';
+        return;
+      }
+
+      const nameSpan = document.getElementById('studentName');
+      const classSpan = document.getElementById('studentClass');
+      if (p) p.textContent = `Welcome, ${auth.user.username} (Student)`;
+      if (nameSpan) nameSpan.textContent = auth.user.username || 'Student';
+      if (classSpan) classSpan.textContent = auth.user.class_id || 'N/A';
+    })();
+
+    document.getElementById('studentLogout').addEventListener('click', () => {
+      localStorage.removeItem('auth');
+      window.location.href = 'index.html';
+    });
+  </script>
+</body>
+</html>

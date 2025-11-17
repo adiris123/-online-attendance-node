@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Teacher Dashboard - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Glassmorphic Teacher Navbar -->
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">T</div>
+        <div class="brand-text">
+          <span class="brand-title">Teacher Dashboard</span>
+          <span class="brand-subtitle">Manage classes, sessions &amp; attendance</span>
+        </div>
+      </div>
+      <nav class="nav-primary" aria-label="Teacher navigation">
+        <a href="teacher-dashboard.html" class="nav-pill active">
+          <span class="nav-pill-icon">📘</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="attendance.html" class="nav-pill">
+          <span class="nav-pill-icon">📝</span>
+          <span class="nav-pill-label">Create Session</span>
+        </a>
+        <a href="attendance.html" class="nav-pill">
+          <span class="nav-pill-icon">✔️</span>
+          <span class="nav-pill-label">Attendance</span>
+        </a>
+        <a href="reports.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+        <button type="button" id="teacherLogout" class="nav-pill">
+          <span class="nav-pill-icon">🚪</span>
+          <span class="nav-pill-label">Logout</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="teacher-main">
+    <!-- Header card -->
+    <section class="card glass teacher-header">
+      <div class="teacher-header-title">
+        <span class="teacher-header-icon">🎓</span>
+        <div>
+          <h1>Teacher Dashboard</h1>
+          <p class="teacher-header-subtitle" id="teacherWelcome">Loading teacher details...</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="teacher-grid">
+      <!-- My Class Overview -->
+      <section class="card glass teacher-card">
+        <header class="teacher-card-header">
+          <div>
+            <h2><span class="teacher-card-icon">🏫</span>My Class Overview</h2>
+            <p class="teacher-card-subtitle">Quick snapshot of the class you are assigned to.</p>
+          </div>
+          <div class="teacher-card-divider"></div>
+        </header>
+        <ul class="teacher-overview-list">
+          <li>Total students in class: <strong id="teacherClassStudents">–</strong></li>
+          <li>Class name: <strong id="teacherClassName">–</strong></li>
+          <li>Today&apos;s attendance created: <strong id="teacherTodaySession">–</strong></li>
+        </ul>
+      </section>
+
+      <!-- Upcoming Sessions -->
+      <section class="card glass teacher-card">
+        <header class="teacher-card-header">
+          <div>
+            <h2><span class="teacher-card-icon">📅</span>Upcoming Sessions</h2>
+            <p class="teacher-card-subtitle">Your next scheduled teaching sessions.</p>
+          </div>
+          <div class="teacher-card-divider"></div>
+        </header>
+        <ul class="teacher-list">
+          <li><span class="teacher-list-dot"></span>No upcoming sessions loaded.</li>
+        </ul>
+      </section>
+
+      <!-- Recent Attendance Activity -->
+      <section class="card glass teacher-card teacher-card-wide">
+        <header class="teacher-card-header">
+          <div>
+            <h2><span class="teacher-card-icon">✔️</span>Recent Attendance Activity</h2>
+            <p class="teacher-card-subtitle">Latest actions for your class attendance.</p>
+          </div>
+          <div class="teacher-card-divider"></div>
+        </header>
+        <ul class="teacher-list">
+          <li><span class="teacher-list-dot"></span>Attendance saved for today&apos;s session.</li>
+          <li><span class="teacher-list-dot"></span>Yesterday&apos;s attendance edited for two students.</li>
+          <li><span class="teacher-list-dot"></span>Class report generated for parent meeting.</li>
+        </ul>
+      </section>
+
+      <!-- Quick Actions -->
+      <section class="card glass teacher-card teacher-card-wide">
+        <header class="teacher-card-header">
+          <div>
+            <h2><span class="teacher-card-icon">⚡</span>Quick Actions</h2>
+            <p class="teacher-card-subtitle">Jump directly into your daily workflow.</p>
+          </div>
+          <div class="teacher-card-divider"></div>
+        </header>
+        <div class="teacher-quick-actions">
+          <a href="attendance.html" class="btn-pill">
+            <span class="btn-pill-icon">📝</span>
+            <span>Create Session</span>
+          </a>
+          <a href="attendance.html" class="btn-pill">
+            <span class="btn-pill-icon">✔️</span>
+            <span>Mark Attendance</span>
+          </a>
+          <a href="reports.html" class="btn-pill">
+            <span class="btn-pill-icon">📊</span>
+            <span>View Class Report</span>
+          </a>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    (function enforceTeacher() {
+      const auth = getAuth();
+      const p = document.getElementById('teacherWelcome');
+      if (!auth || !auth.user || !auth.token) {
+        if (p) p.textContent = 'Not logged in. Redirecting to login...';
+        setTimeout(() => (window.location.href = 'index.html'), 600);
+        return;
+      }
+
+      const role = auth.user.role;
+      if (role !== 'teacher') {
+        alert('Only teachers can access the Teacher Dashboard.');
+        if (role === 'admin') {
+          window.location.href = 'admin-dashboard.html';
+        } else if (role === 'student') {
+          window.location.href = 'student-dashboard.html';
+        } else {
+          window.location.href = 'index.html';
+        }
+        return;
+      }
+
+      if (p) p.textContent = `Welcome, ${auth.user.username} (Teacher)`;
+    })();
+
+    document.getElementById('teacherLogout').addEventListener('click', () => {
+      localStorage.removeItem('auth');
+      window.location.href = 'index.html';
+    });
+  </script>
+</body>
+</html>
