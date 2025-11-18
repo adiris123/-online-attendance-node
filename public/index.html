@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Online Attendance Management - Login</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">AMS</div>
+        <div class="brand-text">
+          <span class="brand-title">Online Attendance</span>
+          <span class="brand-subtitle">Management System</span>
+        </div>
+      </div>
+      <nav class="nav-primary" aria-label="Primary navigation">
+        <a href="index.html" class="nav-pill active">
+          <span class="nav-pill-icon">🔑</span>
+          <span class="nav-pill-label">Login</span>
+        </a>
+        <a href="dashboard.html" class="nav-pill">
+          <span class="nav-pill-icon">📊</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="students.html" class="nav-pill">
+          <span class="nav-pill-icon">👨‍🎓</span>
+          <span class="nav-pill-label">Students</span>
+        </a>
+        <a href="reports.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+  <main class="login-layout">
+    <section class="card login-card">
+      <h2>Sign in</h2>
+      <p class="login-subtitle">Use your username and password. Your role (Admin / Teacher / Student) is detected automatically after login.</p>
+      <form id="loginForm">
+        <label>
+          Username
+          <input type="text" id="username" required />
+        </label>
+        <label>
+          Password
+          <input type="password" id="password" required />
+        </label>
+        <label>
+          Role
+          <select id="role" required>
+            <option value="">Select role</option>
+            <option value="admin">Admin</option>
+            <option value="teacher">Teacher</option>
+            <option value="student">Student</option>
+          </select>
+        </label>
+        <button type="submit">Login</button>
+      </form>
+      <p id="loginMessage" class="message"></p>
+    </section>
+  </main>
+  <script>
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // If already logged in, keep user on this page but show a hint instead of redirecting
+    (function showLoggedInHint() {
+      const auth = getAuth();
+      if (auth && auth.user && auth.token) {
+        const msgEl = document.getElementById('loginMessage');
+        if (msgEl) {
+          msgEl.textContent = `You are already logged in as ${auth.user.username} (${auth.user.role}). You can log in as someone else or open the Dashboard.`;
+          msgEl.classList.add('success');
+        }
+      }
+    })();
+
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value.trim();
+      const role = document.getElementById('role').value;
+
+      const msgEl = document.getElementById('loginMessage');
+      msgEl.textContent = '';
+      msgEl.classList.remove('error', 'success');
+
+      if (!username || !password || !role) {
+        msgEl.textContent = 'Please enter username, password, and select your role.';
+        msgEl.classList.add('error');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, role })
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          msgEl.textContent = data.error || 'Login failed';
+          msgEl.classList.add('error');
+          return;
+        }
+
+        // Persist auth info so other pages can call protected APIs
+        localStorage.setItem('auth', JSON.stringify({ user: data.user, token: data.token }));
+
+        msgEl.textContent = 'Login successful! Redirecting...';
+        msgEl.classList.remove('error');
+        msgEl.classList.add('success');
+
+        let redirect = 'dashboard.html';
+        if (data.user && data.user.role === 'admin') redirect = 'admin-dashboard.html';
+        else if (data.user && data.user.role === 'teacher') redirect = 'teacher-dashboard.html';
+        else if (data.user && data.user.role === 'student') redirect = 'student-dashboard.html';
+
+        setTimeout(() => {
+          window.location.href = redirect;
+        }, 500);
+      } catch (err) {
+        console.error(err);
+        msgEl.textContent = 'Network error';
+        msgEl.classList.add('error');
+      }
+    });
+  </script>
+</body>
+</html>

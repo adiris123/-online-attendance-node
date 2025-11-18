@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dashboard Router - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">AMS</div>
+        <div class="brand-text">
+          <span class="brand-title">Dashboard Router</span>
+          <span class="brand-subtitle">Detecting your role...</span>
+        </div>
+      </div>
+      <nav class="nav-primary" aria-label="Primary navigation">
+        <a href="index.html" class="nav-pill">
+          <span class="nav-pill-icon">🔑</span>
+          <span class="nav-pill-label">Login</span>
+        </a>
+        <a href="dashboard.html" class="nav-pill active">
+          <span class="nav-pill-icon">📊</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="students.html" class="nav-pill">
+          <span class="nav-pill-icon">👨‍🎓</span>
+          <span class="nav-pill-label">Students</span>
+        </a>
+        <a href="reports.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="card">
+      <p id="routerMessage">Detecting your role and opening the correct dashboard.</p>
+    </section>
+  </main>
+
+  <script>
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    (function routeByRole() {
+      const auth = getAuth();
+      const messageEl = document.getElementById('routerMessage');
+
+      if (!auth || !auth.user || !auth.token) {
+        messageEl.textContent = 'You are not logged in. Redirecting to login...';
+        setTimeout(() => {
+          window.location.href = 'index.html';
+        }, 600);
+        return;
+      }
+
+      const role = auth.user.role;
+      if (role === 'admin') {
+        window.location.href = 'admin-dashboard.html';
+      } else if (role === 'teacher') {
+        window.location.href = 'teacher-dashboard.html';
+      } else if (role === 'student') {
+        window.location.href = 'student-dashboard.html';
+      } else {
+        messageEl.textContent = 'Unknown role. Redirecting to login...';
+        localStorage.removeItem('auth');
+        setTimeout(() => {
+          window.location.href = 'index.html';
+        }, 800);
+      }
+    })();
+  </script>
+</body>
+</html>

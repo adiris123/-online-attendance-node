@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Class Management - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">A</div>
+        <div class="brand-text">
+          <span class="brand-title">Admin Dashboard</span>
+          <span class="brand-subtitle">System management &amp; configuration</span>
+        </div>
+      </div>
+      <!-- Admin navbar: management-focused, no attendance/session options -->
+      <nav class="nav-primary" aria-label="Admin navigation">
+        <a href="admin-dashboard.html" class="nav-pill">
+          <span class="nav-pill-icon">📊</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="class-management.html" class="nav-pill active">
+          <span class="nav-pill-icon">🏫</span>
+          <span class="nav-pill-label">Classes</span>
+        </a>
+        <a href="teachers.html" class="nav-pill">
+          <span class="nav-pill-icon">👩‍🏫</span>
+          <span class="nav-pill-label">Teachers</span>
+        </a>
+        <a href="students.html" class="nav-pill">
+          <span class="nav-pill-icon">👨‍🎓</span>
+          <span class="nav-pill-label">Students</span>
+        </a>
+        <a href="reports.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+        <a href="settings.html" class="nav-pill">
+          <span class="nav-pill-icon">⚙️</span>
+          <span class="nav-pill-label">Settings</span>
+        </a>
+        <button type="button" id="adminLogout" class="nav-pill">
+          <span class="nav-pill-icon">🚪</span>
+          <span class="nav-pill-label">Logout</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="students-main">
+    <!-- Page header -->
+    <section class="card glass students-header">
+      <div class="students-header-title">
+        <span class="students-header-icon">🏫</span>
+        <div>
+          <h1>Class Management</h1>
+          <p class="students-header-subtitle">Create and organize classes before assigning students.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="students-grid">
+      <!-- Create Class Card (moved from students.html) -->
+      <section class="card glass students-card" id="createClassSection">
+        <header class="students-card-header">
+          <div>
+            <h2><span class="students-card-icon">🏫</span>Create Class</h2>
+            <p class="students-card-subtitle">Set up new classes before assigning students.</p>
+          </div>
+          <div class="students-card-divider"></div>
+        </header>
+        <form id="classForm" class="students-form">
+          <label>
+            <span>Class Name</span>
+            <input type="text" id="className" required />
+          </label>
+          <label>
+            <span>Description</span>
+            <input type="text" id="classDescription" />
+          </label>
+          <div class="students-card-actions">
+            <button type="submit" class="btn-pill">
+              <span class="btn-pill-icon">➕</span>
+              <span>Create Class</span>
+            </button>
+          </div>
+        </form>
+        <p id="classMessage" class="message"></p>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function authFetch(url, options = {}) {
+      const auth = getAuth();
+      if (!auth || !auth.token || !auth.user) {
+        window.location.href = 'index.html';
+        throw new Error('Not authenticated');
+      }
+
+      const headers = Object.assign({}, options.headers || {}, {
+        'x-auth-token': auth.token
+      });
+
+      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
+        if (res.status === 401) {
+          localStorage.removeItem('auth');
+          window.location.href = 'index.html';
+          throw new Error('Unauthorized');
+        }
+        if (res.status === 403) {
+          alert('Access denied for this operation.');
+          throw new Error('Forbidden');
+        }
+        return res;
+      });
+    }
+
+    (function enforceRole() {
+      const auth = getAuth();
+      if (!auth || !auth.user) {
+        window.location.href = 'index.html';
+        return;
+      }
+
+      const role = auth.user.role;
+      // Only admins can manage classes from this page.
+      if (role === 'student') {
+        window.location.href = 'student-dashboard.html';
+        return;
+      }
+      if (role === 'teacher') {
+        window.location.href = 'teacher-dashboard.html';
+        return;
+      }
+    })();
+
+    document.getElementById('classForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('className').value.trim();
+      const description = document.getElementById('classDescription').value.trim();
+      const msgEl = document.getElementById('classMessage');
+      msgEl.textContent = '';
+      msgEl.classList.remove('error');
+      msgEl.classList.remove('success');
+
+      try {
+        const res = await authFetch('/api/classes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msgEl.textContent = data.error || 'Failed to create class';
+          msgEl.classList.add('error');
+          return;
+        }
+        msgEl.textContent = 'Class created successfully';
+        msgEl.classList.add('success');
+        document.getElementById('classForm').reset();
+      } catch (err) {
+        console.error(err);
+        msgEl.textContent = 'Network error';
+        msgEl.classList.add('error');
+      }
+    });
+  </script>
+</body>
+</html>

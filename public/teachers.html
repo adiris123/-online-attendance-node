@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Teachers Management - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">A</div>
+        <div class="brand-text">
+          <span class="brand-title">Admin Dashboard</span>
+          <span class="brand-subtitle">System management &amp; configuration</span>
+        </div>
+      </div>
+      <!-- Admin navbar: management-focused, no attendance/session options -->
+      <nav class="nav-primary" aria-label="Admin navigation">
+        <a href="admin-dashboard.html" class="nav-pill">
+          <span class="nav-pill-icon">📊</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="class-management.html" class="nav-pill">
+          <span class="nav-pill-icon">🏫</span>
+          <span class="nav-pill-label">Classes</span>
+        </a>
+        <a href="teachers.html" class="nav-pill active">
+          <span class="nav-pill-icon">👩‍🏫</span>
+          <span class="nav-pill-label">Teachers</span>
+        </a>
+        <a href="students.html" class="nav-pill">
+          <span class="nav-pill-icon">👨‍🎓</span>
+          <span class="nav-pill-label">Students</span>
+        </a>
+        <a href="reports.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+        <a href="settings.html" class="nav-pill">
+          <span class="nav-pill-icon">⚙️</span>
+          <span class="nav-pill-label">Settings</span>
+        </a>
+        <button type="button" id="adminLogout" class="nav-pill">
+          <span class="nav-pill-icon">🚪</span>
+          <span class="nav-pill-label">Logout</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="students-main">
+    <!-- Header section -->
+    <section class="card glass students-header">
+      <div class="students-header-title">
+        <span class="students-header-icon">👩‍🏫</span>
+        <div>
+          <h1>Teachers Management</h1>
+          <p class="students-header-subtitle">Manage teachers, assign classes, and review teacher records.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="students-grid">
+      <!-- Placeholder Create Teacher card to mirror layout -->
+      <section class="card glass students-card" id="createTeacherIntro">
+        <header class="students-card-header">
+          <div>
+            <h2><span class="students-card-icon">📘</span>Create Teacher Profile</h2>
+            <p class="students-card-subtitle">Set up teacher profiles before assigning them to classes.</p>
+          </div>
+          <div class="students-card-divider"></div>
+        </header>
+        <p class="students-card-subtitle">Use the Add Teacher form to register new teachers. You can extend this card with more options later.</p>
+      </section>
+
+      <!-- Add Teacher Form -->
+      <section class="card glass students-card" id="addTeacherSection">
+        <header class="students-card-header">
+          <div>
+            <h2><span class="students-card-icon">👩‍🏫</span>Add Teacher</h2>
+            <p class="students-card-subtitle">Register teachers, assign them to classes, and capture key details.</p>
+          </div>
+          <div class="students-card-divider"></div>
+        </header>
+        <form class="students-form" id="teacherForm">
+          <label>
+            <span>Teacher Name</span>
+            <input type="text" id="teacherName" required />
+          </label>
+          <label>
+            <span>Email (optional)</span>
+            <input type="text" id="teacherEmail" />
+          </label>
+          <label>
+            <span>Phone (optional)</span>
+            <input type="text" id="teacherPhone" />
+          </label>
+          <label>
+            <span>Assign Class</span>
+            <select id="teacherClass"></select>
+          </label>
+          <label>
+            <span>Experience (optional)</span>
+            <input type="text" id="teacherExperience" />
+          </label>
+          <label>
+            <span>Subject (optional)</span>
+            <input type="text" id="teacherSubject" />
+          </label>
+          <div class="students-card-actions">
+            <button type="submit" class="btn-pill">
+              <span class="btn-pill-icon">➕</span>
+              <span>Add Teacher</span>
+            </button>
+          </div>
+        </form>
+        <p id="teacherMessage" class="message"></p>
+      </section>
+
+      <!-- Teachers List -->
+      <section class="card glass students-card students-card-wide" id="teachersListSection">
+        <header class="students-card-header">
+          <div>
+            <h2><span class="students-card-icon">📋</span>Teachers List</h2>
+            <p class="students-card-subtitle">View and manage registered teachers.</p>
+          </div>
+          <div class="students-card-divider"></div>
+        </header>
+
+        <div class="students-list-controls">
+          <label>
+            <span>Filter by Class</span>
+            <select id="filterTeacherClass"></select>
+          </label>
+          <button id="reloadTeachers" class="btn-pill">
+            <span class="btn-pill-icon">🔄</span>
+            <span>Reload</span>
+          </button>
+        </div>
+
+        <div class="table-wrapper glass-table">
+          <table class="students-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Subject</th>
+                <th>Class Assigned</th>
+                <th>Contact</th>
+                <th>Experience</th>
+              </tr>
+            </thead>
+            <tbody id="teachersTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function authFetch(url, options = {}) {
+      const auth = getAuth();
+      if (!auth || !auth.token || !auth.user) {
+        window.location.href = 'index.html';
+        throw new Error('Not authenticated');
+      }
+
+      const headers = Object.assign({}, options.headers || {}, {
+        'x-auth-token': auth.token,
+      });
+
+      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
+        if (res.status === 401) {
+          localStorage.removeItem('auth');
+          window.location.href = 'index.html';
+          throw new Error('Unauthorized');
+        }
+        if (res.status === 403) {
+          alert('Access denied for this operation.');
+          throw new Error('Forbidden');
+        }
+        return res;
+      });
+    }
+
+    (function enforceAdmin() {
+      const auth = getAuth();
+      if (!auth || !auth.user || !auth.token || auth.user.role !== 'admin') {
+        window.location.href = 'index.html';
+        return;
+      }
+    })();
+
+    document.getElementById('adminLogout').addEventListener('click', () => {
+      localStorage.removeItem('auth');
+      window.location.href = 'index.html';
+    });
+
+    async function fetchClasses() {
+      const res = await authFetch('/api/classes');
+      const classes = await res.json();
+      return Array.isArray(classes) ? classes : [];
+    }
+
+    async function loadClasses() {
+      const classes = await fetchClasses();
+      const teacherClass = document.getElementById('teacherClass');
+      const filterTeacherClass = document.getElementById('filterTeacherClass');
+      teacherClass.innerHTML = '<option value="">Unassigned</option>';
+      filterTeacherClass.innerHTML = '<option value="">All Classes</option>';
+
+      classes.forEach((c) => {
+        const opt1 = document.createElement('option');
+        opt1.value = c.id;
+        opt1.textContent = c.name;
+        teacherClass.appendChild(opt1);
+
+        const opt2 = document.createElement('option');
+        opt2.value = c.id;
+        opt2.textContent = c.name;
+        filterTeacherClass.appendChild(opt2);
+      });
+    }
+
+    async function loadTeachers() {
+      const classId = document.getElementById('filterTeacherClass').value;
+      let url = '/api/teachers';
+      if (classId) {
+        url += '?class_id=' + encodeURIComponent(classId);
+      }
+      const res = await authFetch(url);
+      const teachers = await res.json();
+      const tbody = document.getElementById('teachersTable');
+      tbody.innerHTML = '';
+      (teachers || []).forEach((t) => {
+        const tr = document.createElement('tr');
+        const name = t.display_name || t.username;
+        const subject = t.subject || '';
+        const email = t.email || '';
+        const phone = t.phone || '';
+        const contactParts = [];
+        if (email) contactParts.push(email);
+        if (phone) contactParts.push(phone);
+        const contact = contactParts.join(' / ');
+        const experience = t.experience || '';
+        tr.innerHTML = `<td>${t.id}</td><td>${name}</td><td>${subject}</td><td>${t.class_name || t.class_id || ''}</td><td>${contact}</td><td>${experience}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    document.getElementById('teacherForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('teacherName').value.trim();
+      const email = document.getElementById('teacherEmail').value.trim();
+      const phone = document.getElementById('teacherPhone').value.trim();
+      const class_id = document.getElementById('teacherClass').value || null;
+      const experience = document.getElementById('teacherExperience').value.trim();
+      const subject = document.getElementById('teacherSubject').value.trim();
+      const msgEl = document.getElementById('teacherMessage');
+      msgEl.textContent = '';
+
+      // For now, we create a basic teacher login using username + default password.
+      // You can adjust this logic later as needed.
+      const username = name.toLowerCase().replace(/\s+/g, '') || undefined;
+      const password = 'teacher123';
+
+      try {
+        const res = await authFetch('/api/teachers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username,
+            display_name: name,
+            password,
+            class_id,
+            // extra fields can be stored later when schema is extended
+            email,
+            phone,
+            experience,
+            subject,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msgEl.textContent = data.error || 'Failed to add teacher';
+          msgEl.classList.add('error');
+          return;
+        }
+        msgEl.textContent = 'Teacher added successfully';
+        msgEl.classList.remove('error');
+        msgEl.classList.add('success');
+        document.getElementById('teacherForm').reset();
+        await loadTeachers();
+      } catch (err) {
+        console.error(err);
+        msgEl.textContent = 'Network error';
+      }
+    });
+
+    document.getElementById('reloadTeachers').addEventListener('click', () => {
+      loadTeachers();
+    });
+
+    document.getElementById('filterTeacherClass').addEventListener('change', () => {
+      loadTeachers();
+    });
+
+    (async () => {
+      await loadClasses();
+      await loadTeachers();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Create Session - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Glassmorphic top navigation -->
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">AMS</div>
+        <div class="brand-text">
+          <span class="brand-title">Create Session</span>
+          <span class="brand-subtitle">Schedule a new teaching session</span>
+        </div>
+      </div>
+      <nav class="nav-primary" aria-label="Primary navigation">
+        <a href="index.html" class="nav-pill">
+          <span class="nav-pill-icon">🔑</span>
+          <span class="nav-pill-label">Login</span>
+        </a>
+        <a href="dashboard.html" class="nav-pill">
+          <span class="nav-pill-icon">📊</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="students.html" class="nav-pill">
+          <span class="nav-pill-icon">👨‍🎓</span>
+          <span class="nav-pill-label">Students</span>
+        </a>
+        <a href="attendance.html" class="nav-pill">
+          <span class="nav-pill-icon">✅</span>
+          <span class="nav-pill-label">Attendance</span>
+        </a>
+        <a href="reports.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="attendance-main">
+    <section class="card glass attendance-header">
+      <div class="attendance-header-title">
+        <span class="attendance-header-icon">📅</span>
+        <div>
+          <h1>Create Session</h1>
+          <p class="attendance-header-subtitle">Select class, pick a date, and add an optional topic.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="attendance-grid">
+      <section class="card glass attendance-card" id="createSessionCard">
+        <header class="attendance-card-header">
+          <div>
+            <h2><span class="attendance-card-icon">📘</span>Create Session</h2>
+            <p class="attendance-card-subtitle">Create a new teaching session for any class.</p>
+          </div>
+          <div class="attendance-card-divider"></div>
+        </header>
+        <form id="sessionForm" class="attendance-form">
+          <label>
+            <span>Class</span>
+            <select id="sessionClass" required></select>
+          </label>
+          <label>
+            <span>Date</span>
+            <input type="date" id="sessionDate" required />
+          </label>
+          <label>
+            <span>Topic</span>
+            <input type="text" id="sessionTopic" />
+          </label>
+          <div class="attendance-card-actions">
+            <button type="submit" class="btn-pill">
+              <span class="btn-pill-icon">➕</span>
+              <span>Create Session</span>
+            </button>
+          </div>
+        </form>
+        <p id="sessionMessage" class="message"></p>
+        <p class="attendance-header-subtitle">
+          After creating a session, go to
+          <a href="attendance.html">Mark Attendance</a>
+          to record student presence.
+        </p>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    let currentSessionId = null;
+
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function authFetch(url, options = {}) {
+      const auth = getAuth();
+      if (!auth || !auth.token || !auth.user) {
+        window.location.href = 'index.html';
+        throw new Error('Not authenticated');
+      }
+
+      const headers = Object.assign({}, options.headers || {}, {
+        'x-auth-token': auth.token
+      });
+
+      return fetch(url, Object.assign({}, options, { headers: headers })).then(function (res) {
+        if (res.status === 401) {
+          localStorage.removeItem('auth');
+          window.location.href = 'index.html';
+          throw new Error('Unauthorized');
+        }
+        if (res.status === 403) {
+          alert('Access denied for this operation.');
+          throw new Error('Forbidden');
+        }
+        return res;
+      });
+    }
+
+    (function enforceRole() {
+      const auth = getAuth();
+      if (!auth || !auth.user) {
+        window.location.href = 'index.html';
+        return;
+      }
+
+      const role = auth.user.role;
+      if (role !== 'teacher') {
+        alert('Only teachers can create sessions.');
+        if (role === 'admin') {
+          window.location.href = 'admin-dashboard.html';
+        } else if (role === 'student') {
+          window.location.href = 'student-dashboard.html';
+        } else {
+          window.location.href = 'index.html';
+        }
+      }
+    })();
+
+    async function fetchClasses() {
+      const res = await authFetch('/api/classes');
+      const classes = await res.json();
+      return Array.isArray(classes) ? classes : [];
+    }
+
+    async function loadClasses() {
+      const classes = await fetchClasses();
+      const sel = document.getElementById('sessionClass');
+      if (!sel) return;
+      sel.innerHTML = '';
+      classes.forEach(function (c) {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        sel.appendChild(opt);
+      });
+    }
+
+    document.getElementById('sessionForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const class_id = document.getElementById('sessionClass').value;
+      const date = document.getElementById('sessionDate').value;
+      const topic = document.getElementById('sessionTopic').value.trim();
+      const msgEl = document.getElementById('sessionMessage');
+      msgEl.textContent = '';
+      msgEl.classList.remove('error');
+      msgEl.classList.remove('success');
+
+      try {
+        const res = await authFetch('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ class_id: class_id, date: date, topic: topic })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msgEl.textContent = data.error || 'Failed to create session';
+          msgEl.classList.add('error');
+          return;
+        }
+        currentSessionId = data.id;
+        msgEl.textContent = 'Session created successfully. You can now mark attendance using the Mark Attendance page.';
+        msgEl.classList.add('success');
+      } catch (err) {
+        console.error(err);
+        msgEl.textContent = 'Network error';
+        msgEl.classList.add('error');
+      }
+    });
+
+    (async function () {
+      await loadClasses();
+    })();
+  </script>
+</body>
+</html>

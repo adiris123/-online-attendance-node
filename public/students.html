@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Students Management - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">A</div>
+        <div class="brand-text">
+          <span class="brand-title">Admin Dashboard</span>
+          <span class="brand-subtitle">System management &amp; configuration</span>
+        </div>
+      </div>
+      <!-- Admin navbar: management-focused, no attendance/session options -->
+      <nav class="nav-primary" aria-label="Admin navigation">
+        <a href="admin-dashboard.html" class="nav-pill">
+          <span class="nav-pill-icon">📊</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="class-management.html" class="nav-pill">
+          <span class="nav-pill-icon">🏫</span>
+          <span class="nav-pill-label">Classes</span>
+        </a>
+        <a href="teachers.html" class="nav-pill">
+          <span class="nav-pill-icon">👩‍🏫</span>
+          <span class="nav-pill-label">Teachers</span>
+        </a>
+        <a href="students.html" class="nav-pill active">
+          <span class="nav-pill-icon">👨‍🎓</span>
+          <span class="nav-pill-label">Students</span>
+        </a>
+        <a href="reports.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+        <a href="settings.html" class="nav-pill">
+          <span class="nav-pill-icon">⚙️</span>
+          <span class="nav-pill-label">Settings</span>
+        </a>
+        <button type="button" id="adminLogout" class="nav-pill">
+          <span class="nav-pill-icon">🚪</span>
+          <span class="nav-pill-label">Logout</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="students-main">
+    <!-- Page header -->
+    <section class="card glass students-header">
+      <div class="students-header-title">
+        <span class="students-header-icon">👨‍🎓</span>
+        <div>
+          <h1>Students Management</h1>
+          <p class="students-header-subtitle">Manage classes, add students, and view filtered student lists.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="students-grid">
+      <!-- Add Student Card -->
+      <section class="card glass students-card" id="addStudentSection">
+        <header class="students-card-header">
+          <div>
+            <h2><span class="students-card-icon">👨‍🎓</span>Add Student</h2>
+            <p class="students-card-subtitle">Register students and link them to classes.</p>
+          </div>
+          <div class="students-card-divider"></div>
+        </header>
+        <form id="studentForm" class="students-form">
+          <label>
+            <span>Student Name</span>
+            <input type="text" id="studentName" required />
+          </label>
+          <label>
+            <span>Roll Number</span>
+            <input type="text" id="studentRoll" />
+          </label>
+          <label>
+            <span>Class</span>
+            <select id="studentClass" required></select>
+          </label>
+          <div class="students-card-actions">
+            <button type="submit" class="btn-pill">
+              <span class="btn-pill-icon">➕</span>
+              <span>Add Student</span>
+            </button>
+          </div>
+        </form>
+        <p id="studentMessage" class="message"></p>
+      </section>
+
+      <!-- Students List Card -->
+      <section class="card glass students-card students-card-wide" id="studentsListSection">
+        <header class="students-card-header">
+          <div>
+            <h2><span class="students-card-icon">📋</span>Students List</h2>
+            <p class="students-card-subtitle">Filter students by class and review their basic details.</p>
+          </div>
+          <div class="students-card-divider"></div>
+        </header>
+
+        <div class="students-list-controls">
+          <label>
+            <span>Filter by Class</span>
+            <select id="filterClass"></select>
+          </label>
+          <button id="reloadStudents" class="btn-pill">
+            <span class="btn-pill-icon">🔄</span>
+            <span>Reload</span>
+          </button>
+        </div>
+
+        <div class="table-wrapper glass-table">
+          <table class="students-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Roll</th>
+                <th>Class ID</th>
+              </tr>
+            </thead>
+            <tbody id="studentsTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function authFetch(url, options = {}) {
+      const auth = getAuth();
+      if (!auth || !auth.token || !auth.user) {
+        window.location.href = 'index.html';
+        throw new Error('Not authenticated');
+      }
+
+      const headers = Object.assign({}, options.headers || {}, {
+        'x-auth-token': auth.token
+      });
+
+      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
+        if (res.status === 401) {
+          localStorage.removeItem('auth');
+          window.location.href = 'index.html';
+          throw new Error('Unauthorized');
+        }
+        if (res.status === 403) {
+          alert('Access denied for this operation.');
+          throw new Error('Forbidden');
+        }
+        return res;
+      });
+    }
+
+    (function enforceRole() {
+      const auth = getAuth();
+      if (!auth || !auth.user) {
+        window.location.href = 'index.html';
+        return;
+      }
+
+      const role = auth.user.role;
+      // Students should not see this page at all
+      if (role === 'student') {
+        window.location.href = 'student-dashboard.html';
+        return;
+      }
+
+      // Teachers can view lists but not create students
+      if (role === 'teacher') {
+        const addStudentSection = document.getElementById('addStudentSection');
+        if (addStudentSection) addStudentSection.style.display = 'none';
+      }
+    })();
+
+    async function fetchClasses() {
+      const res = await authFetch('/api/classes');
+      const classes = await res.json();
+      return Array.isArray(classes) ? classes : [];
+    }
+
+    async function loadClasses() {
+      const classes = await fetchClasses();
+      const studentClass = document.getElementById('studentClass');
+      const filterClass = document.getElementById('filterClass');
+      studentClass.innerHTML = '';
+      filterClass.innerHTML = '<option value="">All Classes</option>';
+
+      classes.forEach(c => {
+        const opt1 = document.createElement('option');
+        opt1.value = c.id;
+        opt1.textContent = c.name;
+        studentClass.appendChild(opt1);
+
+        const opt2 = document.createElement('option');
+        opt2.value = c.id;
+        opt2.textContent = c.name;
+        filterClass.appendChild(opt2);
+      });
+    }
+
+    async function loadStudents() {
+      const classId = document.getElementById('filterClass').value;
+      let url = '/api/students';
+      if (classId) {
+        url += '?class_id=' + encodeURIComponent(classId);
+      }
+      const res = await authFetch(url);
+      const students = await res.json();
+      const tbody = document.getElementById('studentsTable');
+      tbody.innerHTML = '';
+      (students || []).forEach(s => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${s.id}</td><td>${s.name}</td><td>${s.roll_number || ''}</td><td>${s.class_id}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    document.getElementById('studentForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('studentName').value.trim();
+      const roll_number = document.getElementById('studentRoll').value.trim();
+      const class_id = document.getElementById('studentClass').value;
+      const msgEl = document.getElementById('studentMessage');
+      msgEl.textContent = '';
+
+      try {
+        const res = await authFetch('/api/students', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, roll_number, class_id })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msgEl.textContent = data.error || 'Failed to add student';
+          msgEl.classList.add('error');
+          return;
+        }
+        msgEl.textContent = 'Student added successfully';
+        msgEl.classList.remove('error');
+        msgEl.classList.add('success');
+        document.getElementById('studentForm').reset();
+        await loadStudents();
+      } catch (err) {
+        console.error(err);
+        msgEl.textContent = 'Network error';
+      }
+    });
+
+    document.getElementById('reloadStudents').addEventListener('click', () => {
+      loadStudents();
+    });
+
+    document.getElementById('filterClass').addEventListener('change', () => {
+      loadStudents();
+    });
+
+    // Initial load
+    (async () => {
+      await loadClasses();
+      await loadStudents();
+    })();
+  </script>
+</body>
+</html>

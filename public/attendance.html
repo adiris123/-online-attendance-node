@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Attendance Management - Online Attendance</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Glassmorphic top navigation -->
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <div class="brand-icon">AMS</div>
+        <div class="brand-text">
+          <span class="brand-title">Attendance Management</span>
+          <span class="brand-subtitle">Online Attendance</span>
+        </div>
+      </div>
+      <nav class="nav-primary" aria-label="Primary navigation">
+        <a href="index.html" class="nav-pill">
+          <span class="nav-pill-icon">🔑</span>
+          <span class="nav-pill-label">Login</span>
+        </a>
+        <a href="dashboard.html" class="nav-pill">
+          <span class="nav-pill-icon">📊</span>
+          <span class="nav-pill-label">Dashboard</span>
+        </a>
+        <a href="students.html" class="nav-pill">
+          <span class="nav-pill-icon">👨‍🎓</span>
+          <span class="nav-pill-label">Students</span>
+        </a>
+        <a href="attendance.html" class="nav-pill active">
+          <span class="nav-pill-icon">✅</span>
+          <span class="nav-pill-label">Attendance</span>
+        </a>
+        <a href="reports.html" class="nav-pill">
+          <span class="nav-pill-icon">📑</span>
+          <span class="nav-pill-label">Reports</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="attendance-main">
+    <!-- Page header -->
+    <section class="card glass attendance-header">
+      <div class="attendance-header-title">
+        <span class="attendance-header-icon">📅</span>
+        <div>
+          <h1>Attendance Management</h1>
+          <p class="attendance-header-subtitle">Create sessions and mark attendance for the selected class.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="attendance-grid">
+      <!-- Mark Attendance -->
+      <section class="card glass attendance-card attendance-card-wide" id="markAttendanceCard">
+        <header class="attendance-card-header">
+          <div>
+            <h2><span class="attendance-card-icon">✔️</span>Mark Attendance</h2>
+            <p class="attendance-card-subtitle">Select class and session, then mark students present or absent.</p>
+          </div>
+          <div class="attendance-card-divider"></div>
+        </header>
+
+        <div class="attendance-filters">
+          <label>
+            <span>Class</span>
+            <select id="attendanceClass"></select>
+          </label>
+          <label>
+            <span>Session</span>
+            <select id="attendanceSession"></select>
+          </label>
+        </div>
+
+        <p id="attendanceInfo" class="attendance-info">No session selected.</p>
+
+        <div class="table-wrapper glass-table">
+          <table class="attendance-table">
+            <thead>
+              <tr>
+                <th>Present</th>
+                <th>Student</th>
+                <th>Roll</th>
+              </tr>
+            </thead>
+            <tbody id="attendanceTable"></tbody>
+          </table>
+        </div>
+
+        <div class="attendance-card-actions attendance-save-actions">
+          <button id="saveAttendance" class="btn-pill" disabled>
+            <span class="btn-pill-icon">💾</span>
+            <span>Save Attendance</span>
+          </button>
+        </div>
+        <p id="attendanceMessage" class="message"></p>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    let currentSessionId = null;
+    let currentClassId = null;
+    let currentSessions = [];
+
+    function getAuth() {
+      try {
+        const raw = localStorage.getItem('auth');
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function authFetch(url, options = {}) {
+      const auth = getAuth();
+      if (!auth || !auth.token || !auth.user) {
+        window.location.href = 'index.html';
+        throw new Error('Not authenticated');
+      }
+
+      const headers = Object.assign({}, options.headers || {}, {
+        'x-auth-token': auth.token
+      });
+
+      return fetch(url, Object.assign({}, options, { headers: headers })).then(function (res) {
+        if (res.status === 401) {
+          localStorage.removeItem('auth');
+          window.location.href = 'index.html';
+          throw new Error('Unauthorized');
+        }
+        if (res.status === 403) {
+          // Generic access control; attendance page will redirect non-teachers separately.
+          throw new Error('Forbidden');
+        }
+        return res;
+      });
+    }
+
+    (function enforceRole() {
+      const auth = getAuth();
+      if (!auth || !auth.user) {
+        window.location.href = 'index.html';
+        return;
+      }
+
+      const role = auth.user.role;
+      // Only teachers can access the attendance marking page
+      if (role !== 'teacher') {
+        if (role === 'admin') {
+          window.location.href = 'admin-dashboard.html';
+        } else if (role === 'student') {
+          window.location.href = 'student-dashboard.html';
+        } else {
+          window.location.href = 'index.html';
+        }
+      }
+    })();
+
+    async function fetchClasses() {
+      const res = await authFetch('/api/classes');
+      const classes = await res.json();
+      return Array.isArray(classes) ? classes : [];
+    }
+
+    async function loadClasses() {
+      const classes = await fetchClasses();
+      const classSel = document.getElementById('attendanceClass');
+      if (!classSel) return;
+      classSel.innerHTML = '';
+      classes.forEach(function (c) {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        classSel.appendChild(opt);
+      });
+
+      const initialClassId = classSel.value || (classes[0] && classes[0].id);
+      if (initialClassId) {
+        classSel.value = String(initialClassId);
+        await loadSessionsForClass(initialClassId);
+      }
+    }
+
+    async function loadSessionsForClass(classId) {
+      const sessionSel = document.getElementById('attendanceSession');
+      const infoEl = document.getElementById('attendanceInfo');
+      const tbody = document.getElementById('attendanceTable');
+      const saveBtn = document.getElementById('saveAttendance');
+      if (!sessionSel || !infoEl || !tbody || !saveBtn) return;
+
+      sessionSel.innerHTML = '';
+      tbody.innerHTML = '';
+      currentSessions = [];
+      currentSessionId = null;
+      currentClassId = classId || null;
+      saveBtn.disabled = true;
+
+      if (!classId) {
+        infoEl.textContent = 'No class selected.';
+        return;
+      }
+
+      try {
+        const res = await authFetch('/api/sessions?class_id=' + encodeURIComponent(classId));
+        const sessions = await res.json();
+        currentSessions = Array.isArray(sessions) ? sessions : [];
+
+        if (currentSessions.length === 0) {
+          infoEl.textContent = 'No sessions found for the selected class.';
+          return;
+        }
+
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select a session';
+        sessionSel.appendChild(placeholder);
+
+        currentSessions.forEach(function (s) {
+          const label = s.date + (s.topic ? ' - ' + s.topic : '');
+          const opt = document.createElement('option');
+          opt.value = s.id;
+          opt.textContent = label;
+          sessionSel.appendChild(opt);
+        });
+
+        infoEl.textContent = 'Select a session to load students.';
+      } catch (err) {
+        console.error(err);
+        infoEl.textContent = 'Failed to load sessions.';
+      }
+    }
+
+    async function loadStudentsForClass(classId) {
+      const tbody = document.getElementById('attendanceTable');
+      const saveBtn = document.getElementById('saveAttendance');
+      if (!tbody || !saveBtn) return;
+
+      tbody.innerHTML = '';
+      saveBtn.disabled = true;
+
+      if (!classId) return;
+
+      const res = await authFetch('/api/students?class_id=' + encodeURIComponent(classId));
+      const students = await res.json();
+      (students || []).forEach(function (s) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td><input type="checkbox" data-student-id="' + s.id + '" checked /></td>' +
+          '<td>' + s.name + '</td>' +
+          '<td>' + (s.roll_number || '') + '</td>';
+        tbody.appendChild(tr);
+      });
+      saveBtn.disabled = !students || students.length === 0;
+    }
+
+    document.getElementById('attendanceClass').addEventListener('change', async function (e) {
+      const classId = e.target.value;
+      await loadSessionsForClass(classId);
+    });
+
+    document.getElementById('attendanceSession').addEventListener('change', async function (e) {
+      const sessionId = e.target.value;
+      const infoEl = document.getElementById('attendanceInfo');
+      const tbody = document.getElementById('attendanceTable');
+      const saveBtn = document.getElementById('saveAttendance');
+
+      if (!sessionId) {
+        currentSessionId = null;
+        if (tbody) tbody.innerHTML = '';
+        if (saveBtn) saveBtn.disabled = true;
+        if (infoEl) infoEl.textContent = 'No session selected.';
+        return;
+      }
+
+      currentSessionId = parseInt(sessionId, 10);
+      const classSel = document.getElementById('attendanceClass');
+      currentClassId = classSel ? classSel.value : null;
+
+      const sessionMeta = currentSessions.find(function (s) { return String(s.id) === String(sessionId); });
+      if (sessionMeta) {
+        infoEl.textContent = 'Session #' + sessionMeta.id + ' for class ' + sessionMeta.class_id + ' on ' + sessionMeta.date;
+      } else {
+        infoEl.textContent = 'Session #' + sessionId;
+      }
+
+      await loadStudentsForClass(currentClassId);
+    });
+
+    document.getElementById('saveAttendance').addEventListener('click', async function () {
+      if (!currentSessionId) return;
+      const checkboxes = document.querySelectorAll('input[data-student-id]');
+      const records = [];
+      checkboxes.forEach(function (cb) {
+        const student_id = parseInt(cb.getAttribute('data-student-id'), 10);
+        const status = cb.checked ? 'present' : 'absent';
+        records.push({ student_id: student_id, status: status });
+      });
+
+      const msgEl = document.getElementById('attendanceMessage');
+      msgEl.textContent = '';
+      msgEl.classList.remove('error');
+      msgEl.classList.remove('success');
+
+      try {
+        const res = await authFetch('/api/attendance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: currentSessionId, records: records })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          msgEl.textContent = data.error || 'Failed to save attendance';
+          msgEl.classList.add('error');
+          return;
+        }
+        msgEl.textContent = 'Attendance saved successfully';
+        msgEl.classList.add('success');
+      } catch (err) {
+        console.error(err);
+        msgEl.textContent = 'Network error';
+        msgEl.classList.add('error');
+      }
+    });
+
+    (async function () {
+      await loadClasses();
+    })();
+  </script>
+</body>
+</html>
