@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Teacher Dashboard - Online Attendance</title>
   <link rel="stylesheet" href="css/style.css" />
+  <script src="js/auth.js"></script>
 </head>
 <body>
   <!-- Glassmorphic Teacher Navbar -->
@@ -129,39 +130,6 @@
   </main>
 
   <script>
-    function getAuth() {
-      try {
-        const raw = localStorage.getItem('auth');
-        return raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    function authFetch(url, options = {}) {
-      const auth = getAuth();
-      if (!auth || !auth.token || !auth.user) {
-        window.location.href = 'index.html';
-        throw new Error('Not authenticated');
-      }
-
-      const headers = Object.assign({}, options.headers || {}, {
-        'x-auth-token': auth.token,
-      });
-
-      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
-        if (res.status === 401) {
-          localStorage.removeItem('auth');
-          window.location.href = 'index.html';
-          throw new Error('Unauthorized');
-        }
-        if (res.status === 403) {
-          alert('Access denied for this operation.');
-          throw new Error('Forbidden');
-        }
-        return res;
-      });
-    }
 
     async function loadTeacherOverview() {
       try {
@@ -210,8 +178,7 @@
     })();
 
     document.getElementById('teacherLogout').addEventListener('click', () => {
-      localStorage.removeItem('auth');
-      window.location.href = 'index.html';
+      logout(); // Uses shared logout function from auth.js
     });
   </script>
 </body>

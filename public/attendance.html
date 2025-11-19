@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Attendance Management - Online Attendance</title>
   <link rel="stylesheet" href="css/style.css" />
+  <script src="js/auth.js"></script>
 </head>
 <body>
   <!-- Glassmorphic top navigation -->
@@ -107,40 +108,6 @@
     let currentClassId = null;
     let currentSessions = [];
 
-    function getAuth() {
-      try {
-        const raw = localStorage.getItem('auth');
-        return raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    function authFetch(url, options = {}) {
-      const auth = getAuth();
-      if (!auth || !auth.token || !auth.user) {
-        window.location.href = 'index.html';
-        throw new Error('Not authenticated');
-      }
-
-      const headers = Object.assign({}, options.headers || {}, {
-        'x-auth-token': auth.token
-      });
-
-      return fetch(url, Object.assign({}, options, { headers: headers })).then(function (res) {
-        if (res.status === 401) {
-          localStorage.removeItem('auth');
-          window.location.href = 'index.html';
-          throw new Error('Unauthorized');
-        }
-        if (res.status === 403) {
-          // Generic access control; attendance page will redirect non-teachers separately.
-          throw new Error('Forbidden');
-        }
-        return res;
-      });
-    }
-
     (function enforceRole() {
       const auth = getAuth();
       if (!auth || !auth.user) {
@@ -235,7 +202,7 @@
       }
     }
 
-    async function loadStudentsForClass(classId) {
+    async function loadStudentsForClass(classId, sessionId = null) {
       const tbody = document.getElementById('attendanceTable');
       const saveBtn = document.getElementById('saveAttendance');
       if (!tbody || !saveBtn) return;
@@ -245,16 +212,51 @@
 
       if (!classId) return;
 
-      const res = await authFetch('/api/students?class_id=' + encodeURIComponent(classId));
-      const students = await res.json();
-      (students || []).forEach(function (s) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = '<td><input type="checkbox" data-student-id="' + s.id + '" checked /></td>' +
-          '<td>' + s.name + '</td>' +
-          '<td>' + (s.roll_number || '') + '</td>';
-        tbody.appendChild(tr);
-      });
-      saveBtn.disabled = !students || students.length === 0;
+      try {
+        // Load students
+        const res = await authFetch('/api/students?class_id=' + encodeURIComponent(classId));
+        const students = await res.json();
+        
+        // Load existing attendance if session is selected
+        let existingAttendance = {};
+        if (sessionId) {
+          try {
+            const attendanceRes = await authFetch('/api/attendance/by-session?session_id=' + encodeURIComponent(sessionId));
+            if (attendanceRes.ok) {
+              const attendanceRecords = await attendanceRes.json();
+              if (Array.isArray(attendanceRecords)) {
+                attendanceRecords.forEach(function (rec) {
+                  if (rec.student_id) {
+                    existingAttendance[rec.student_id] = rec.status;
+                  }
+                });
+              }
+            }
+          } catch (attendanceErr) {
+            console.warn('Failed to load existing attendance:', attendanceErr);
+            // Continue without existing attendance - default to all present
+          }
+        }
+        
+        // Create table rows with correct checkbox states
+        (students || []).forEach(function (s) {
+          const tr = document.createElement('tr');
+          const isPresent = existingAttendance[s.id] ? (existingAttendance[s.id].toLowerCase() === 'present') : true;
+          const checkboxHtml = '<input type="checkbox" data-student-id="' + s.id + '"' + (isPresent ? ' checked' : '') + ' />';
+          tr.innerHTML = '<td>' + checkboxHtml + '</td>' +
+            '<td>' + s.name + '</td>' +
+            '<td>' + (s.roll_number || '') + '</td>';
+          tbody.appendChild(tr);
+        });
+        saveBtn.disabled = !students || students.length === 0;
+      } catch (err) {
+        console.error('Failed to load students:', err);
+        const msgEl = document.getElementById('attendanceMessage');
+        if (msgEl) {
+          msgEl.textContent = 'Failed to load students.';
+          msgEl.classList.add('error');
+        }
+      }
     }
 
     document.getElementById('attendanceClass').addEventListener('change', async function (e) {
@@ -287,23 +289,46 @@
         infoEl.textContent = 'Session #' + sessionId;
       }
 
-      await loadStudentsForClass(currentClassId);
+      await loadStudentsForClass(currentClassId, currentSessionId);
     });
 
     document.getElementById('saveAttendance').addEventListener('click', async function () {
-      if (!currentSessionId) return;
+      if (!currentSessionId) {
+        const msgEl = document.getElementById('attendanceMessage');
+        msgEl.textContent = 'Please select a session first';
+        msgEl.classList.add('error');
+        return;
+      }
+
       const checkboxes = document.querySelectorAll('input[data-student-id]');
       const records = [];
+      
       checkboxes.forEach(function (cb) {
         const student_id = parseInt(cb.getAttribute('data-student-id'), 10);
+        if (isNaN(student_id) || student_id <= 0) {
+          console.warn('Skipping invalid student_id');
+          return;
+        }
         const status = cb.checked ? 'present' : 'absent';
         records.push({ student_id: student_id, status: status });
       });
 
+      if (records.length === 0) {
+        const msgEl = document.getElementById('attendanceMessage');
+        msgEl.textContent = 'No valid students to mark attendance for';
+        msgEl.classList.add('error');
+        return;
+      }
+
       const msgEl = document.getElementById('attendanceMessage');
       msgEl.textContent = '';
-      msgEl.classList.remove('error');
-      msgEl.classList.remove('success');
+      msgEl.classList.remove('error', 'success');
+
+      // Show loading state
+      const saveBtn = document.getElementById('saveAttendance');
+      const originalText = saveBtn.innerHTML;
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span class="btn-pill-icon">⏳</span><span>Saving...</span>';
 
       try {
         const res = await authFetch('/api/attendance', {
@@ -311,18 +336,31 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: currentSessionId, records: records })
         });
-        const data = await res.json();
+
         if (!res.ok) {
+          const data = await res.json();
           msgEl.textContent = data.error || 'Failed to save attendance';
           msgEl.classList.add('error');
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = originalText;
           return;
         }
-        msgEl.textContent = 'Attendance saved successfully';
+
+        const data = await res.json();
+        msgEl.textContent = data.message || 'Attendance saved successfully';
         msgEl.classList.add('success');
+        
+        // Reset button after short delay
+        setTimeout(() => {
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = originalText;
+        }, 2000);
       } catch (err) {
         console.error(err);
-        msgEl.textContent = 'Network error';
+        msgEl.textContent = 'Network error: ' + (err.message || 'Unknown error');
         msgEl.classList.add('error');
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = originalText;
       }
     });
 

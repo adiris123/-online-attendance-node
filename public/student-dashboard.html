@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Student Dashboard - Online Attendance</title>
   <link rel="stylesheet" href="css/style.css" />
+  <script src="js/auth.js"></script>
 </head>
 <body>
   <!-- Glassmorphic Student Navbar -->
@@ -112,7 +113,7 @@
           </div>
           <div class="student-card-divider"></div>
         </header>
-        <ul class="student-activity-list">
+        <ul class="student-activity-list" id="studentActivityList">
           <li><span class="student-activity-status present">✔ Present</span><span class="student-activity-date">16 Nov</span></li>
           <li><span class="student-activity-status present">✔ Present</span><span class="student-activity-date">15 Nov</span></li>
           <li><span class="student-activity-status absent">❌ Absent</span><span class="student-activity-date">14 Nov</span></li>
@@ -150,37 +151,58 @@
   </main>
 
   <script>
-    function getAuth() {
-      try {
-        const raw = localStorage.getItem('auth');
-        return raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        return null;
+
+    function loadRecentActivity(attendanceRecords) {
+      const activityList = document.getElementById('studentActivityList');
+      if (!activityList) return;
+      
+      // Clear existing static content
+      activityList.innerHTML = '';
+      
+      // Take first 5 records (already sorted by date DESC from API)
+      const recentRecords = (attendanceRecords || []).slice(0, 5);
+      
+      if (recentRecords.length === 0) {
+        const li = document.createElement('li');
+        li.innerHTML = '<span class="student-activity-status">No attendance records yet</span>';
+        activityList.appendChild(li);
+        return;
       }
-    }
-
-    function authFetch(url, options = {}) {
-      const auth = getAuth();
-      if (!auth || !auth.token || !auth.user) {
-        window.location.href = 'index.html';
-        throw new Error('Not authenticated');
+      
+      // Format date helper
+      function formatDate(dateStr) {
+        if (!dateStr) return 'N/A';
+        try {
+          const date = new Date(dateStr);
+          const day = date.getDate();
+          const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          const month = months[date.getMonth()];
+          return day + ' ' + month;
+        } catch (e) {
+          return dateStr;
+        }
       }
-
-      const headers = Object.assign({}, options.headers || {}, {
-        'x-auth-token': auth.token,
-      });
-
-      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
-        if (res.status === 401) {
-          localStorage.removeItem('auth');
-          window.location.href = 'index.html';
-          throw new Error('Unauthorized');
-        }
-        if (res.status === 403) {
-          alert('Access denied for this operation.');
-          throw new Error('Forbidden');
-        }
-        return res;
+      
+      // Populate list
+      recentRecords.forEach(function (record) {
+        const li = document.createElement('li');
+        const status = String(record.status || '').toLowerCase();
+        const isPresent = status === 'present';
+        const statusClass = isPresent ? 'present' : 'absent';
+        const statusIcon = isPresent ? '✔' : '❌';
+        const statusText = isPresent ? 'Present' : 'Absent';
+        
+        const statusSpan = document.createElement('span');
+        statusSpan.className = 'student-activity-status ' + statusClass;
+        statusSpan.textContent = statusIcon + ' ' + statusText;
+        
+        const dateSpan = document.createElement('span');
+        dateSpan.className = 'student-activity-date';
+        dateSpan.textContent = formatDate(record.date);
+        
+        li.appendChild(statusSpan);
+        li.appendChild(dateSpan);
+        activityList.appendChild(li);
       });
     }
 
@@ -210,16 +232,19 @@
         if (percentEl) percentEl.textContent = percent + '%';
         if (presentEl) presentEl.textContent = String(presents);
         if (absentEl) absentEl.textContent = String(absents);
+        
+        // Load recent activity using the same data
+        loadRecentActivity(rows);
       } catch (err) {
         console.error('Failed to load student stats:', err);
       }
     }
 
-    (function enforceStudent() {
+    (async function enforceStudent() {
       const auth = getAuth();
       const p = document.getElementById('studentWelcome');
       if (!auth || !auth.user || !auth.token) {
-        p.textContent = 'Not logged in. Redirecting to login...';
+        if (p) p.textContent = 'Not logged in. Redirecting to login...';
         setTimeout(() => (window.location.href = 'index.html'), 600);
         return;
       }
@@ -242,14 +267,35 @@
       const classSpan = document.getElementById('studentClass');
       if (p) p.textContent = `Welcome, ${auth.user.username} (Student)`;
       if (nameSpan) nameSpan.textContent = auth.user.username || 'Student';
-      if (classSpan) classSpan.textContent = auth.user.class_id || 'N/A';
+      
+      // Load class name
+      if (auth.user.class_id && classSpan) {
+        try {
+          const res = await authFetch('/api/classes');
+          if (res.ok) {
+            const classes = await res.json();
+            const myClass = Array.isArray(classes) ? classes.find(c => c.id === auth.user.class_id) : null;
+            if (myClass) {
+              classSpan.textContent = myClass.name;
+            } else {
+              classSpan.textContent = 'N/A';
+            }
+          } else {
+            classSpan.textContent = 'N/A';
+          }
+        } catch (err) {
+          console.error('Failed to load class:', err);
+          classSpan.textContent = 'N/A';
+        }
+      } else {
+        if (classSpan) classSpan.textContent = 'N/A';
+      }
 
       loadStudentStats();
     })();
 
     document.getElementById('studentLogout').addEventListener('click', () => {
-      localStorage.removeItem('auth');
-      window.location.href = 'index.html';
+      logout(); // Uses shared logout function from auth.js
     });
   </script>
 </body>

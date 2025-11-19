@@ -59,3 +59,13 @@ INSERT OR IGNORE INTO students (id, name, roll_number, class_id) VALUES (1, 'adi
 INSERT OR IGNORE INTO users (id, username, password, role, display_name) VALUES (1, 'admin', 'admin123', 'admin', 'System Admin');
 INSERT OR IGNORE INTO users (id, username, password, role, display_name, class_id) VALUES (2, 'teacher1', 'teacher123', 'teacher', 'Demo Teacher', 1);
 INSERT OR IGNORE INTO users (id, username, password, role, display_name, class_id, student_id) VALUES (3, 'aditya', 'student123', 'student', 'aditya', 1, 1);
+
+-- Performance indexes
+CREATE INDEX IF NOT EXISTS idx_attendance_session ON attendance(session_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id);
+CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_class ON sessions(class_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_class_date ON sessions(class_id, date);
+CREATE INDEX IF NOT EXISTS idx_users_student ON users(student_id);
+CREATE INDEX IF NOT EXISTS idx_users_class ON users(class_id);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);

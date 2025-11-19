@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Students Management - Online Attendance</title>
   <link rel="stylesheet" href="css/style.css" />
+  <script src="js/auth.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -134,39 +135,6 @@
   </main>
 
   <script>
-    function getAuth() {
-      try {
-        const raw = localStorage.getItem('auth');
-        return raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    function authFetch(url, options = {}) {
-      const auth = getAuth();
-      if (!auth || !auth.token || !auth.user) {
-        window.location.href = 'index.html';
-        throw new Error('Not authenticated');
-      }
-
-      const headers = Object.assign({}, options.headers || {}, {
-        'x-auth-token': auth.token
-      });
-
-      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
-        if (res.status === 401) {
-          localStorage.removeItem('auth');
-          window.location.href = 'index.html';
-          throw new Error('Unauthorized');
-        }
-        if (res.status === 403) {
-          alert('Access denied for this operation.');
-          throw new Error('Forbidden');
-        }
-        return res;
-      });
-    }
 
     (function enforceRole() {
       const auth = getAuth();
@@ -225,9 +193,21 @@
       const students = await res.json();
       const tbody = document.getElementById('studentsTable');
       tbody.innerHTML = '';
-      (students || []).forEach(s => {
+        (students || []).forEach(s => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${s.id}</td><td>${s.name}</td><td>${s.roll_number || ''}</td><td>${s.class_id}</td>`;
+        // Use textContent to prevent XSS
+        const td1 = document.createElement('td');
+        td1.textContent = s.id || '';
+        tr.appendChild(td1);
+        const td2 = document.createElement('td');
+        td2.textContent = s.name || '';
+        tr.appendChild(td2);
+        const td3 = document.createElement('td');
+        td3.textContent = s.roll_number || '';
+        tr.appendChild(td3);
+        const td4 = document.createElement('td');
+        td4.textContent = s.class_id || '';
+        tr.appendChild(td4);
         tbody.appendChild(tr);
       });
     }

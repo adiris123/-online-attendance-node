@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Teachers Management - Online Attendance</title>
   <link rel="stylesheet" href="css/style.css" />
+  <script src="js/auth.js"></script>
 </head>
 <body>
   <header class="app-header">
@@ -160,39 +161,6 @@
   </main>
 
   <script>
-    function getAuth() {
-      try {
-        const raw = localStorage.getItem('auth');
-        return raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    function authFetch(url, options = {}) {
-      const auth = getAuth();
-      if (!auth || !auth.token || !auth.user) {
-        window.location.href = 'index.html';
-        throw new Error('Not authenticated');
-      }
-
-      const headers = Object.assign({}, options.headers || {}, {
-        'x-auth-token': auth.token,
-      });
-
-      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
-        if (res.status === 401) {
-          localStorage.removeItem('auth');
-          window.location.href = 'index.html';
-          throw new Error('Unauthorized');
-        }
-        if (res.status === 403) {
-          alert('Access denied for this operation.');
-          throw new Error('Forbidden');
-        }
-        return res;
-      });
-    }
 
     (function enforceAdmin() {
       const auth = getAuth();
@@ -203,8 +171,7 @@
     })();
 
     document.getElementById('adminLogout').addEventListener('click', () => {
-      localStorage.removeItem('auth');
-      window.location.href = 'index.html';
+      logout(); // Uses shared logout function from auth.js
     });
 
     async function fetchClasses() {
@@ -254,7 +221,14 @@
         if (phone) contactParts.push(phone);
         const contact = contactParts.join(' / ');
         const experience = t.experience || '';
-        tr.innerHTML = `<td>${t.id}</td><td>${name}</td><td>${subject}</td><td>${t.class_name || t.class_id || ''}</td><td>${contact}</td><td>${experience}</td>`;
+        // Use textContent to prevent XSS
+        const tr = document.createElement('tr');
+        const cells = [String(t.id || ''), name, subject, (t.class_name || t.class_id || ''), contact, experience];
+        cells.forEach(text => {
+          const td = document.createElement('td');
+          td.textContent = text;
+          tr.appendChild(td);
+        });
         tbody.appendChild(tr);
       });
     }

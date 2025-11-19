@@ -4,6 +4,8 @@ const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
 const PDFDocument = require('pdfkit');
+const bcrypt = require('bcrypt');
+const rateLimit = require('express-rate-limit');
 const db = require('./db');
 
 const app = express();
@@ -11,10 +13,42 @@ const PORT = process.env.PORT || 3000;
 
 // In-memory session store: token -> { user, expiresAt }
 const sessions = new Map();
-const SESSION_TTL_MS = 1000 * 60 * 60 * 8; // 8 hours
+const SESSION_TTL_HOURS = parseInt(process.env.SESSION_TTL_HOURS || '8', 10);
+const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
 
-app.use(cors());
+// Clean up expired sessions periodically
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [token, session] of sessions.entries()) {
+    if (session.expiresAt && session.expiresAt <= now) {
+      sessions.delete(token);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`Cleaned up ${cleaned} expired session(s)`);
+  }
+}, 1000 * 60 * 60); // Run every hour
+
+// Rate limiting (login route excluded - correct credentials should never be blocked)
+// Note: loginLimiter removed to ensure users with correct credentials can always log in
+
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 100, // 100 requests per minute
+  message: { error: 'Too many requests, please slow down' }
+});
+
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : 'http://localhost:3000',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-auth-token']
+}));
 app.use(bodyParser.json());
+// Apply rate limiting to all API routes except static files
+app.use('/api', apiLimiter);
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- Helpers ---
@@ -22,7 +56,10 @@ function handleDbCallback(res, successStatus = 200, transform = (rows) => rows) 
   return (err, result) => {
     if (err) {
       console.error('DB Error:', err);
-      return res.status(500).json({ error: 'Database error', details: err.message });
+      return res.status(500).json({ 
+        error: 'Database error',
+        details: process.env.NODE_ENV === 'development' ? err.message : undefined
+      });
     }
     res.status(successStatus).json(transform(result));
   };
@@ -77,6 +114,26 @@ function requireRole(...roles) {
     }
     return next();
   };
+}
+
+function validateInteger(value, fieldName) {
+  const num = parseInt(value, 10);
+  if (isNaN(num) || num <= 0) {
+    throw new Error(`Invalid ${fieldName}: must be a positive integer`);
+  }
+  return num;
+}
+
+function validateDate(dateString) {
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(dateString)) {
+    throw new Error('Invalid date format. Use YYYY-MM-DD');
+  }
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) {
+    throw new Error('Invalid date value');
+  }
+  return dateString;
 }
 
 // --- Export helpers ---
@@ -168,13 +225,32 @@ app.post('/api/login', (req, res) => {
   }
 
   const sql = 'SELECT id, username, role, class_id, student_id, password FROM users WHERE username = ?';
-  db.get(sql, [username], (err, user) => {
+  db.get(sql, [username], async (err, user) => {
     if (err) {
       console.error('Login error:', err);
       return res.status(500).json({ error: 'Database error' });
     }
 
-    if (!user || user.password !== password) {
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+
+    // Check password (support both hashed and plain text for migration)
+    let passwordMatch = false;
+    if (user.password.startsWith('$2b$') || user.password.startsWith('$2a$')) {
+      // Hashed password
+      passwordMatch = await bcrypt.compare(password, user.password);
+    } else {
+      // Plain text password (for migration)
+      passwordMatch = user.password === password;
+      // Optionally hash and update in database
+      if (passwordMatch) {
+        const hashed = await bcrypt.hash(password, 10);
+        db.run('UPDATE users SET password = ? WHERE id = ?', [hashed, user.id]);
+      }
+    }
+
+    if (!passwordMatch) {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
@@ -259,13 +335,30 @@ app.post('/api/students', requireAuth, requireRole('admin'), (req, res) => {
   if (!name || !class_id) {
     return res.status(400).json({ error: 'Student name and class_id are required' });
   }
-  const sql = 'INSERT INTO students (name, roll_number, class_id) VALUES (?, ?, ?)';
-  db.run(sql, [name, roll_number || null, class_id], function (err) {
+
+  const classIdInt = parseInt(class_id, 10);
+  if (isNaN(classIdInt) || classIdInt <= 0) {
+    return res.status(400).json({ error: 'Invalid class_id' });
+  }
+
+  // Validate class exists
+  db.get('SELECT id FROM classes WHERE id = ?', [classIdInt], (err, classRow) => {
     if (err) {
-      console.error('Add student error:', err);
+      console.error('Check class error:', err);
       return res.status(500).json({ error: 'Database error' });
     }
-    res.status(201).json({ id: this.lastID, name, roll_number: roll_number || null, class_id });
+    if (!classRow) {
+      return res.status(400).json({ error: 'Invalid class_id: class does not exist' });
+    }
+
+    const sql = 'INSERT INTO students (name, roll_number, class_id) VALUES (?, ?, ?)';
+    db.run(sql, [name, roll_number || null, classIdInt], function (err) {
+      if (err) {
+        console.error('Add student error:', err);
+        return res.status(500).json({ error: 'Database error', details: err.message });
+      }
+      res.status(201).json({ id: this.lastID, name, roll_number: roll_number || null, class_id: classIdInt });
+    });
   });
 });
 
@@ -307,23 +400,64 @@ app.post('/api/teachers', requireAuth, requireRole('admin'), (req, res) => {
     return res.status(400).json({ error: 'username and password are required for a teacher account' });
   }
 
-  const sql = 'INSERT INTO users (username, password, role, display_name, class_id, email, phone, subject, experience) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
-  db.run(sql, [username, password, 'teacher', display_name || null, class_id || null, email || null, phone || null, subject || null, experience || null], function (err) {
+  // Validate username format (basic)
+  if (username.length < 3 || username.length > 50) {
+    return res.status(400).json({ error: 'Username must be between 3 and 50 characters' });
+  }
+
+  // Check if username already exists
+  db.get('SELECT id FROM users WHERE username = ?', [username], async (err, existing) => {
     if (err) {
-      console.error('Add teacher error:', err);
+      console.error('Check username error:', err);
       return res.status(500).json({ error: 'Database error' });
     }
+    if (existing) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
 
-    res.status(201).json({
-      id: this.lastID,
-      username,
-      display_name: display_name || null,
-      class_id: class_id || null,
-      email: email || null,
-      phone: phone || null,
-      subject: subject || null,
-      experience: experience || null,
-    });
+    // Validate class_id if provided
+    if (class_id) {
+      const classIdInt = parseInt(class_id, 10);
+      if (isNaN(classIdInt) || classIdInt <= 0) {
+        return res.status(400).json({ error: 'Invalid class_id' });
+      }
+
+      db.get('SELECT id FROM classes WHERE id = ?', [classIdInt], (classErr, classRow) => {
+        if (classErr) {
+          console.error('Check class error:', classErr);
+          return res.status(500).json({ error: 'Database error' });
+        }
+        if (!classRow) {
+          return res.status(400).json({ error: 'Invalid class_id: class does not exist' });
+        }
+
+        insertTeacher();
+      });
+    } else {
+      insertTeacher();
+    }
+
+    async function insertTeacher() {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const sql = 'INSERT INTO users (username, password, role, display_name, class_id, email, phone, subject, experience) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
+      db.run(sql, [username, hashedPassword, 'teacher', display_name || null, class_id || null, email || null, phone || null, subject || null, experience || null], function (err) {
+        if (err) {
+          console.error('Add teacher error:', err);
+          return res.status(500).json({ error: 'Database error', details: err.message });
+        }
+
+        res.status(201).json({
+          id: this.lastID,
+          username,
+          display_name: display_name || null,
+          class_id: class_id || null,
+          email: email || null,
+          phone: phone || null,
+          subject: subject || null,
+          experience: experience || null,
+        });
+      });
+    }
   });
 });
 
@@ -443,13 +577,44 @@ app.post('/api/sessions', requireAuth, requireRole('teacher'), (req, res) => {
     return res.status(400).json({ error: 'class_id and date are required' });
   }
 
-  const sql = 'INSERT INTO sessions (class_id, date, topic) VALUES (?, ?, ?)';
-  db.run(sql, [class_id, date, topic || null], function (err) {
+  const classIdInt = parseInt(class_id, 10);
+  if (isNaN(classIdInt) || classIdInt <= 0) {
+    return res.status(400).json({ error: 'Invalid class_id' });
+  }
+
+  // Validate date format
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(date)) {
+    return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
+  }
+
+  const dateObj = new Date(date);
+  if (isNaN(dateObj.getTime())) {
+    return res.status(400).json({ error: 'Invalid date value' });
+  }
+
+  // Validate class exists
+  db.get('SELECT id FROM classes WHERE id = ?', [classIdInt], (err, classRow) => {
     if (err) {
-      console.error('Create session error:', err);
+      console.error('Check class error:', err);
       return res.status(500).json({ error: 'Database error' });
     }
-    res.status(201).json({ id: this.lastID, class_id, date, topic: topic || null });
+    if (!classRow) {
+      return res.status(400).json({ error: 'Invalid class_id: class does not exist' });
+    }
+
+    insertSession();
+
+    function insertSession() {
+      const sql = 'INSERT INTO sessions (class_id, date, topic) VALUES (?, ?, ?)';
+      db.run(sql, [classIdInt, date, topic || null], function (err) {
+        if (err) {
+          console.error('Create session error:', err);
+          return res.status(500).json({ error: 'Database error', details: err.message });
+        }
+        res.status(201).json({ id: this.lastID, class_id: classIdInt, date, topic: topic || null });
+      });
+    }
   });
 });
 
@@ -463,7 +628,13 @@ app.post('/api/attendance', requireAuth, requireRole('teacher'), (req, res) => {
     return res.status(400).json({ error: 'session_id and an array of records are required' });
   }
 
-  db.get('SELECT class_id FROM sessions WHERE id = ?', [session_id], (err, sessionRow) => {
+  // Validate session_id is integer
+  const sessionIdInt = parseInt(session_id, 10);
+  if (isNaN(sessionIdInt) || sessionIdInt <= 0) {
+    return res.status(400).json({ error: 'Invalid session_id' });
+  }
+
+  db.get('SELECT class_id FROM sessions WHERE id = ?', [sessionIdInt], (err, sessionRow) => {
     if (err) {
       console.error('Lookup session error:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -472,29 +643,109 @@ app.post('/api/attendance', requireAuth, requireRole('teacher'), (req, res) => {
       return res.status(400).json({ error: 'Invalid session_id' });
     }
 
-    const stmt = db.prepare('INSERT OR REPLACE INTO attendance (session_id, student_id, status) VALUES (?, ?, ?)');
+    const sessionClassId = sessionRow.class_id;
 
-    db.serialize(() => {
-      db.run('BEGIN TRANSACTION');
-      try {
-        for (const rec of records) {
-          if (!rec.student_id || !rec.status) continue;
-          stmt.run([session_id, rec.student_id, rec.status]);
-        }
-        db.run('COMMIT', (commitErr) => {
-          if (commitErr) {
-            console.error('Commit error:', commitErr);
-            return res.status(500).json({ error: 'Failed to save attendance' });
-          }
-          res.status(201).json({ message: 'Attendance saved' });
-        });
-      } catch (e) {
-        console.error('Attendance transaction error:', e);
-        db.run('ROLLBACK');
-        res.status(500).json({ error: 'Failed to save attendance' });
-      } finally {
-        stmt.finalize();
+    // Validate all student_ids belong to the session's class
+    const studentIds = records
+      .map(r => parseInt(r.student_id, 10))
+      .filter(id => !isNaN(id) && id > 0);
+    
+    if (studentIds.length === 0) {
+      return res.status(400).json({ error: 'No valid student_ids provided' });
+    }
+
+    // Validate status values
+    const validStatuses = ['present', 'absent'];
+    const invalidRecords = records.filter(r => !validStatuses.includes(String(r.status).toLowerCase()));
+    if (invalidRecords.length > 0) {
+      return res.status(400).json({ error: 'Invalid status values. Must be "present" or "absent"' });
+    }
+
+    // Check all students belong to the session's class
+    const placeholders = studentIds.map(() => '?').join(',');
+    const checkSql = `SELECT id FROM students WHERE id IN (${placeholders}) AND class_id = ?`;
+    db.all(checkSql, [...studentIds, sessionClassId], (checkErr, validStudents) => {
+      if (checkErr) {
+        console.error('Student validation error:', checkErr);
+        return res.status(500).json({ error: 'Database error' });
       }
+
+      if (validStudents.length !== studentIds.length) {
+        return res.status(400).json({ error: 'Some students do not belong to this session\'s class' });
+      }
+
+      // Use INSERT ... ON CONFLICT to preserve marked_at timestamp on updates
+      // This requires SQLite 3.24+. For older versions, falls back to INSERT OR REPLACE behavior
+      let upsertStmt;
+      try {
+        // Try to use ON CONFLICT syntax (SQLite 3.24+)
+        upsertStmt = db.prepare(`
+          INSERT INTO attendance (session_id, student_id, status, marked_at)
+          VALUES (?, ?, ?, datetime('now'))
+          ON CONFLICT(session_id, student_id) 
+          DO UPDATE SET status = excluded.status
+        `);
+      } catch (prepareErr) {
+        // Fallback to INSERT OR REPLACE if ON CONFLICT not supported
+        console.warn('ON CONFLICT not supported, using INSERT OR REPLACE (marked_at will be reset on updates)');
+        upsertStmt = db.prepare('INSERT OR REPLACE INTO attendance (session_id, student_id, status) VALUES (?, ?, ?)');
+      }
+      
+      let hasError = false;
+      let completed = 0;
+      const validRecords = records.filter(rec => {
+        const studentId = parseInt(rec.student_id, 10);
+        const status = String(rec.status).toLowerCase();
+        return !isNaN(studentId) && studentId > 0 && validStatuses.includes(status);
+      });
+      const totalRecords = validRecords.length;
+
+      if (totalRecords === 0) {
+        upsertStmt.finalize();
+        return res.status(400).json({ error: 'No valid records to save' });
+      }
+
+      db.serialize(() => {
+        db.run('BEGIN TRANSACTION', (beginErr) => {
+          if (beginErr) {
+            console.error('Begin transaction error:', beginErr);
+            upsertStmt.finalize();
+            return res.status(500).json({ error: 'Failed to start transaction' });
+          }
+
+          for (const rec of validRecords) {
+            const studentId = parseInt(rec.student_id, 10);
+            const status = String(rec.status).toLowerCase();
+
+            upsertStmt.run([sessionIdInt, studentId, status], (runErr) => {
+              completed++;
+              
+              if (runErr && !hasError) {
+                hasError = true;
+                console.error('Attendance insert error:', runErr);
+                db.run('ROLLBACK', () => {
+                  upsertStmt.finalize();
+                  return res.status(500).json({ error: 'Failed to save attendance', details: runErr.message });
+                });
+                return;
+              }
+
+              if (!hasError && completed === totalRecords) {
+                db.run('COMMIT', (commitErr) => {
+                  upsertStmt.finalize();
+                  
+                  if (commitErr) {
+                    console.error('Commit error:', commitErr);
+                    return res.status(500).json({ error: 'Failed to save attendance', details: commitErr.message });
+                  }
+                  
+                  res.status(201).json({ message: 'Attendance saved successfully' });
+                });
+              }
+            });
+          }
+        });
+      });
     });
   });
 });
@@ -539,6 +790,11 @@ app.get('/api/reports/by-student', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'student_id is required' });
   }
 
+  const studentIdInt = parseInt(student_id, 10);
+  if (isNaN(studentIdInt) || studentIdInt <= 0) {
+    return res.status(400).json({ error: 'Invalid student_id' });
+  }
+
   const user = req.user;
 
   const runQuery = () => {
@@ -553,7 +809,7 @@ app.get('/api/reports/by-student', requireAuth, (req, res) => {
       ORDER BY sess.date DESC, sess.id DESC
     `;
 
-    db.all(sql, [student_id], handleDbCallback(res));
+    db.all(sql, [studentIdInt], handleDbCallback(res));
   };
 
   if (user.role === 'admin') {
@@ -561,8 +817,8 @@ app.get('/api/reports/by-student', requireAuth, (req, res) => {
   }
 
   if (user.role === 'student') {
-    if (!user.student_id || String(user.student_id) !== String(student_id)) {
-      return res.status(403).json({ error: 'Forbidden' });
+    if (!user.student_id || String(user.student_id) !== String(studentIdInt)) {
+      return res.status(403).json({ error: 'Forbidden: You can only view your own attendance' });
     }
     return runQuery();
   }
@@ -581,29 +837,35 @@ app.get('/api/reports/summary-by-class', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'class_id is required' });
   }
 
+  const classIdInt = parseInt(class_id, 10);
+  if (isNaN(classIdInt) || classIdInt <= 0) {
+    return res.status(400).json({ error: 'Invalid class_id' });
+  }
+
   const user = req.user;
 
   if (user.role === 'student') {
     return res.status(403).json({ error: 'Forbidden' });
   }
+
+  // FIXED: Only count sessions where attendance was actually marked
   const sql = `
-    SELECT st.id AS student_id,
-           st.name AS student_name,
-           st.roll_number,
-           SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS presents,
-           COUNT(sess.id) AS total,
-           (COUNT(sess.id) - SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)) AS absents
+    SELECT 
+      st.id AS student_id,
+      st.name AS student_name,
+      st.roll_number,
+      COUNT(DISTINCT a.session_id) AS total,
+      SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS presents,
+      (COUNT(DISTINCT a.session_id) - SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)) AS absents
     FROM students st
-    LEFT JOIN sessions sess ON sess.class_id = st.class_id
-    LEFT JOIN attendance a
-           ON a.student_id = st.id
-          AND a.session_id = sess.id
+    LEFT JOIN attendance a ON a.student_id = st.id
+    LEFT JOIN sessions sess ON sess.id = a.session_id AND sess.class_id = st.class_id
     WHERE st.class_id = ?
     GROUP BY st.id, st.name, st.roll_number
     ORDER BY st.name
   `;
 
-  db.all(sql, [class_id], handleDbCallback(res));
+  db.all(sql, [classIdInt], handleDbCallback(res));
 });
 
 // Export: Student report (CSV / PDF)

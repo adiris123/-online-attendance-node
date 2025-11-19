@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <title>Reports - Online Attendance</title>
   <link rel="stylesheet" href="css/style.css" />
+  <script src="js/auth.js"></script>
 </head>
 <body>
   <!-- Top glassmorphic navigation -->
@@ -141,39 +142,6 @@
   </main>
 
   <script>
-    function getAuth() {
-      try {
-        const raw = localStorage.getItem('auth');
-        return raw ? JSON.parse(raw) : null;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    function authFetch(url, options = {}) {
-      const auth = getAuth();
-      if (!auth || !auth.token || !auth.user) {
-        window.location.href = 'index.html';
-        throw new Error('Not authenticated');
-      }
-
-      const headers = Object.assign({}, options.headers || {}, {
-        'x-auth-token': auth.token
-      });
-
-      return fetch(url, Object.assign({}, options, { headers })).then(async (res) => {
-        if (res.status === 401) {
-          localStorage.removeItem('auth');
-          window.location.href = 'index.html';
-          throw new Error('Unauthorized');
-        }
-        if (res.status === 403) {
-          alert('Access denied for this operation.');
-          throw new Error('Forbidden');
-        }
-        return res;
-      });
-    }
 
     const auth = getAuth();
     if (!auth || !auth.user) {
@@ -223,8 +191,7 @@
         btn.appendChild(labelSpan);
 
         btn.addEventListener('click', function () {
-          localStorage.removeItem('auth');
-          window.location.href = 'index.html';
+          logout(); // Uses shared logout function from auth.js
         });
 
         nav.appendChild(btn);
@@ -262,19 +229,6 @@
       if (summarySection) summarySection.style.display = 'none';
     }
 
-    function buildDownloadUrl(pathname, params) {
-      const currentAuth = getAuth();
-      if (!currentAuth || !currentAuth.token) {
-        window.location.href = 'index.html';
-        return null;
-      }
-      const url = new URL(pathname, window.location.origin);
-      Object.keys(params || {}).forEach((key) => {
-        url.searchParams.append(key, params[key]);
-      });
-      url.searchParams.append('token', currentAuth.token);
-      return url.toString();
-    }
 
     async function fetchClasses() {
       const res = await authFetch('/api/classes');
@@ -344,49 +298,115 @@
 
     document.getElementById('loadStudentReport').addEventListener('click', async () => {
       const studentId = document.getElementById('reportStudent').value;
-      if (!studentId) return;
+      if (!studentId) {
+        alert('Please select a student');
+        return;
+      }
 
-      const res = await authFetch('/api/reports/by-student?student_id=' + encodeURIComponent(studentId));
-      const rows = await res.json();
       const tbody = document.getElementById('studentReportTable');
-      tbody.innerHTML = '';
-      (rows || []).forEach(r => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${r.date}</td>
-          <td>${r.class_name}</td>
-          <td>${r.topic || ''}</td>
-          <td>${r.status}</td>
-        `;
-        tbody.appendChild(tr);
-      });
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 20px;">Loading...</td></tr>';
+
+      try {
+        const res = await authFetch('/api/reports/by-student?student_id=' + encodeURIComponent(studentId));
+        
+        if (!res.ok) {
+          const data = await res.json();
+          tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: red;">${data.error || 'Failed to load report'}</td></tr>`;
+          return;
+        }
+
+        const rows = await res.json();
+        tbody.innerHTML = '';
+        
+        if (!Array.isArray(rows) || rows.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center;">No attendance records found</td></tr>';
+          return;
+        }
+
+        rows.forEach(r => {
+          const tr = document.createElement('tr');
+          // Use textContent to prevent XSS
+          const td1 = document.createElement('td');
+          td1.textContent = r.date || '';
+          tr.appendChild(td1);
+          
+          const td2 = document.createElement('td');
+          td2.textContent = r.class_name || '';
+          tr.appendChild(td2);
+          
+          const td3 = document.createElement('td');
+          td3.textContent = r.topic || '';
+          tr.appendChild(td3);
+          
+          const td4 = document.createElement('td');
+          td4.textContent = r.status || '';
+          tr.appendChild(td4);
+          
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error(err);
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: red;">Network error: ' + (err.message || 'Unknown error') + '</td></tr>';
+      }
     });
 
     document.getElementById('loadClassSummary').addEventListener('click', async () => {
       const classId = document.getElementById('summaryClass').value;
-      if (!classId) return;
+      if (!classId) {
+        alert('Please select a class');
+        return;
+      }
 
-      const res = await authFetch('/api/reports/summary-by-class?class_id=' + encodeURIComponent(classId));
-      const rows = await res.json();
       const tbody = document.getElementById('classSummaryTable');
-      tbody.innerHTML = '';
-      (rows || []).forEach(r => {
-        const total = r.total || 0;
-        const presents = r.presents || 0;
-        const percent = total > 0 ? ((presents / total) * 100).toFixed(1) : '0.0';
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${r.student_name}</td>
-          <td>${r.roll_number || ''}</td>
-          <td>${presents}</td>
-          <td>${total}</td>
-          <td>${percent}%</td>
-        `;
-        tbody.appendChild(tr);
-      });
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 20px;">Loading...</td></tr>';
+
+      try {
+        const res = await authFetch('/api/reports/summary-by-class?class_id=' + encodeURIComponent(classId));
+        
+        if (!res.ok) {
+          const data = await res.json();
+          tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: red;">${data.error || 'Failed to load summary'}</td></tr>`;
+          return;
+        }
+
+        const rows = await res.json();
+        tbody.innerHTML = '';
+        
+        if (!Array.isArray(rows) || rows.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No data found</td></tr>';
+          return;
+        }
+
+        rows.forEach(r => {
+          const total = r.total || 0;
+          const presents = r.presents || 0;
+          const percent = total > 0 ? ((presents / total) * 100).toFixed(1) : '0.0';
+          
+          const tr = document.createElement('tr');
+          // Use textContent to prevent XSS
+          const cells = [
+            r.student_name || '',
+            r.roll_number || '',
+            String(presents),
+            String(total),
+            percent + '%'
+          ];
+          
+          cells.forEach(text => {
+            const td = document.createElement('td');
+            td.textContent = text;
+            tr.appendChild(td);
+          });
+          
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error(err);
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: red;">Network error: ' + (err.message || 'Unknown error') + '</td></tr>';
+      }
     });
 
-    document.getElementById('downloadStudentCsv').addEventListener('click', () => {
+    document.getElementById('downloadStudentCsv').addEventListener('click', async () => {
       const currentAuth = getAuth();
       let studentId = null;
       if (currentRole === 'student' && currentAuth && currentAuth.user && currentAuth.user.student_id) {
@@ -394,15 +414,34 @@
       } else {
         studentId = document.getElementById('reportStudent').value;
       }
-      if (!studentId) return;
-      const url = buildDownloadUrl('/api/reports/by-student/export', {
-        student_id: studentId,
-        format: 'csv',
-      });
-      if (url) window.location.href = url;
+      if (!studentId) {
+        alert('Please select a student');
+        return;
+      }
+
+      try {
+        const res = await authFetch(`/api/reports/by-student/export?student_id=${encodeURIComponent(studentId)}&format=csv`);
+        if (!res.ok) {
+          const data = await res.json();
+          alert(data.error || 'Failed to download');
+          return;
+        }
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `student-${studentId}-report.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert('Download failed: ' + (err.message || 'Unknown error'));
+      }
     });
 
-    document.getElementById('downloadStudentPdf').addEventListener('click', () => {
+    document.getElementById('downloadStudentPdf').addEventListener('click', async () => {
       const currentAuth = getAuth();
       let studentId = null;
       if (currentRole === 'student' && currentAuth && currentAuth.user && currentAuth.user.student_id) {
@@ -410,54 +449,136 @@
       } else {
         studentId = document.getElementById('reportStudent').value;
       }
-      if (!studentId) return;
-      const url = buildDownloadUrl('/api/reports/by-student/export', {
-        student_id: studentId,
-        format: 'pdf',
-      });
-      if (url) window.location.href = url;
+      if (!studentId) {
+        alert('Please select a student');
+        return;
+      }
+
+      try {
+        const res = await authFetch(`/api/reports/by-student/export?student_id=${encodeURIComponent(studentId)}&format=pdf`);
+        if (!res.ok) {
+          const data = await res.json();
+          alert(data.error || 'Failed to download');
+          return;
+        }
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `student-${studentId}-report.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert('Download failed: ' + (err.message || 'Unknown error'));
+      }
     });
 
     const downloadClassButtonsVisible = document.getElementById('classSummarySection').style.display !== 'none';
     if (downloadClassButtonsVisible) {
-      document.getElementById('downloadClassCsv').addEventListener('click', () => {
+      document.getElementById('downloadClassCsv').addEventListener('click', async () => {
         const classId = document.getElementById('summaryClass').value;
-        if (!classId) return;
-        const url = buildDownloadUrl('/api/reports/summary-by-class/export', {
-          class_id: classId,
-          format: 'csv',
-        });
-        if (url) window.location.href = url;
+        if (!classId) {
+          alert('Please select a class');
+          return;
+        }
+
+        try {
+          const res = await authFetch(`/api/reports/summary-by-class/export?class_id=${encodeURIComponent(classId)}&format=csv`);
+          if (!res.ok) {
+            const data = await res.json();
+            alert(data.error || 'Failed to download');
+            return;
+          }
+          const blob = await res.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `class-${classId}-summary.csv`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+        } catch (err) {
+          console.error(err);
+          alert('Download failed: ' + (err.message || 'Unknown error'));
+        }
       });
 
-      document.getElementById('downloadClassPdf').addEventListener('click', () => {
+      document.getElementById('downloadClassPdf').addEventListener('click', async () => {
         const classId = document.getElementById('summaryClass').value;
-        if (!classId) return;
-        const url = buildDownloadUrl('/api/reports/summary-by-class/export', {
-          class_id: classId,
-          format: 'pdf',
-        });
-        if (url) window.location.href = url;
+        if (!classId) {
+          alert('Please select a class');
+          return;
+        }
+
+        try {
+          const res = await authFetch(`/api/reports/summary-by-class/export?class_id=${encodeURIComponent(classId)}&format=pdf`);
+          if (!res.ok) {
+            const data = await res.json();
+            alert(data.error || 'Failed to download');
+            return;
+          }
+          const blob = await res.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `class-${classId}-summary.pdf`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+        } catch (err) {
+          console.error(err);
+          alert('Download failed: ' + (err.message || 'Unknown error'));
+        }
       });
     }
 
     (async () => {
       // For students, auto-load their own report if we know their student_id
       if (currentRole === 'student' && auth && auth.user && auth.user.student_id) {
-        const res = await authFetch('/api/reports/by-student?student_id=' + encodeURIComponent(auth.user.student_id));
-        const rows = await res.json();
-        const tbody = document.getElementById('studentReportTable');
-        tbody.innerHTML = '';
-        (rows || []).forEach(r => {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${r.date}</td>
-            <td>${r.class_name}</td>
-            <td>${r.topic || ''}</td>
-            <td>${r.status}</td>
-          `;
-          tbody.appendChild(tr);
-        });
+        try {
+          const res = await authFetch('/api/reports/by-student?student_id=' + encodeURIComponent(auth.user.student_id));
+          if (!res.ok) {
+            const data = await res.json();
+            const tbody = document.getElementById('studentReportTable');
+            tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: red;">${data.error || 'Failed to load report'}</td></tr>`;
+            return;
+          }
+          const rows = await res.json();
+          const tbody = document.getElementById('studentReportTable');
+          tbody.innerHTML = '';
+          
+          if (!Array.isArray(rows) || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align: center;">No attendance records found</td></tr>';
+            return;
+          }
+          
+          rows.forEach(r => {
+            const tr = document.createElement('tr');
+            // Use textContent to prevent XSS
+            const td1 = document.createElement('td');
+            td1.textContent = r.date || '';
+            tr.appendChild(td1);
+            const td2 = document.createElement('td');
+            td2.textContent = r.class_name || '';
+            tr.appendChild(td2);
+            const td3 = document.createElement('td');
+            td3.textContent = r.topic || '';
+            tr.appendChild(td3);
+            const td4 = document.createElement('td');
+            td4.textContent = r.status || '';
+            tr.appendChild(td4);
+            tbody.appendChild(tr);
+          });
+        } catch (err) {
+          console.error(err);
+          const tbody = document.getElementById('studentReportTable');
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: red;">Network error: ' + (err.message || 'Unknown error') + '</td></tr>';
+        }
       } else {
         await loadClassDropdowns();
       }
