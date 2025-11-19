@@ -52,17 +52,19 @@ app.use('/api', apiLimiter);
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- Helpers ---
-function handleDbCallback(res, successStatus = 200, transform = (rows) => rows) {
-  return (err, result) => {
-    if (err) {
-      console.error('DB Error:', err);
-      return res.status(500).json({ 
-        error: 'Database error',
-        details: process.env.NODE_ENV === 'development' ? err.message : undefined
-      });
-    }
-    res.status(successStatus).json(transform(result));
-  };
+// Convert query placeholders (?) to PostgreSQL placeholders ($1, $2, ...)
+function convertPlaceholders(sql, params) {
+  let paramIndex = 1;
+  const convertedSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+  return { sql: convertedSql, params };
+}
+
+async function handleDbError(err, res, context = 'Database operation') {
+  console.error(`${context} error:`, err);
+  return res.status(500).json({ 
+    error: 'Database error',
+    details: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
 }
 
 function getUserFromRequest(req) {
@@ -217,19 +219,20 @@ function sendClassSummaryPdf(res, rows, options = {}) {
 }
 
 // --- Auth ---
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { username, password, role } = req.body;
 
   if (!username || !password || !role) {
     return res.status(400).json({ error: 'Username, password, and role are required' });
   }
 
-  const sql = 'SELECT id, username, role, class_id, student_id, password FROM users WHERE username = ?';
-  db.get(sql, [username], async (err, user) => {
-    if (err) {
-      console.error('Login error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
+  try {
+    const { sql, params } = convertPlaceholders(
+      'SELECT id, username, role, class_id, student_id, password FROM users WHERE username = ?',
+      [username]
+    );
+    const result = await db.query(sql, params);
+    const user = result.rows[0];
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid username or password' });
@@ -246,7 +249,11 @@ app.post('/api/login', (req, res) => {
       // Optionally hash and update in database
       if (passwordMatch) {
         const hashed = await bcrypt.hash(password, 10);
-        db.run('UPDATE users SET password = ? WHERE id = ?', [hashed, user.id]);
+        const { sql: updateSql, params: updateParams } = convertPlaceholders(
+          'UPDATE users SET password = ? WHERE id = ?',
+          [hashed, user.id]
+        );
+        await db.query(updateSql, updateParams);
       }
     }
 
@@ -262,7 +269,9 @@ app.post('/api/login', (req, res) => {
 
     const { token, user: sessionUser, expiresAt } = createSession(user);
     res.json({ message: 'Login successful', user: sessionUser, token, expiresAt });
-  });
+  } catch (err) {
+    return handleDbError(err, res, 'Login');
+  }
 });
 
 app.post('/api/logout', requireAuth, (req, res) => {
@@ -278,59 +287,85 @@ app.get('/api/me', requireAuth, (req, res) => {
 });
 
 // --- Classes ---
-app.get('/api/classes', requireAuth, (req, res) => {
-  const sql = 'SELECT * FROM classes ORDER BY name';
-  db.all(sql, [], handleDbCallback(res));
+app.get('/api/classes', requireAuth, async (req, res) => {
+  try {
+    const sql = 'SELECT * FROM classes ORDER BY name';
+    const result = await db.query(sql);
+    // Always return an array, even if empty
+    res.json(Array.isArray(result.rows) ? result.rows : []);
+  } catch (err) {
+    console.error('GET /api/classes error:', err);
+    return handleDbError(err, res, 'Get classes');
+  }
 });
 
-app.post('/api/classes', requireAuth, requireRole('admin'), (req, res) => {
+app.post('/api/classes', requireAuth, requireRole('admin'), async (req, res) => {
   const { name, description } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Class name is required' });
   }
-  const sql = 'INSERT INTO classes (name, description) VALUES (?, ?)';
-  db.run(sql, [name, description || null], function (err) {
-    if (err) {
-      console.error('Create class error:', err);
-      return res.status(500).json({ error: 'Database error' });
+  try {
+    const { sql, params } = convertPlaceholders(
+      'INSERT INTO classes (name, description) VALUES (?, ?) RETURNING id, name, description',
+      [name, description || null]
+    );
+    const result = await db.query(sql, params);
+    if (!result.rows || result.rows.length === 0) {
+      return res.status(500).json({ error: 'Failed to create class: no data returned' });
     }
-    res.status(201).json({ id: this.lastID, name, description: description || null });
-  });
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('POST /api/classes error:', err);
+    // Handle unique constraint violations (duplicate class name)
+    if (err.code === '23505' || /unique constraint|duplicate key/i.test(err.message)) {
+      return res.status(400).json({ error: 'A class with this name already exists' });
+    }
+    return handleDbError(err, res, 'Create class');
+  }
 });
 
 // --- Students ---
-app.get('/api/students', requireAuth, (req, res) => {
+app.get('/api/students', requireAuth, async (req, res) => {
   const { class_id } = req.query;
   const user = req.user;
 
-  // Students can only see their own record.
-  if (user.role === 'student') {
-    if (!user.student_id) {
-      return res.json([]);
+  try {
+    // Students can only see their own record.
+    if (user.role === 'student') {
+      if (!user.student_id) {
+        return res.json([]);
+      }
+      const { sql, params } = convertPlaceholders(
+        'SELECT * FROM students WHERE id = ? ORDER BY name',
+        [user.student_id]
+      );
+      const result = await db.query(sql, params);
+      return res.json(result.rows);
     }
-    const sql = 'SELECT * FROM students WHERE id = ? ORDER BY name';
-    return db.all(sql, [user.student_id], handleDbCallback(res));
+
+    // Admins and teachers can list students, optionally filtered by class.
+    let sql = 'SELECT * FROM students';
+    const params = [];
+    const where = [];
+
+    if (class_id) {
+      where.push(`class_id = $${params.length + 1}`);
+      params.push(class_id);
+    }
+
+    if (where.length > 0) {
+      sql += ' WHERE ' + where.join(' AND ');
+    }
+
+    sql += ' ORDER BY name';
+    const result = await db.query(sql, params);
+    res.json(result.rows);
+  } catch (err) {
+    return handleDbError(err, res, 'Get students');
   }
-
-  // Admins and teachers can list students, optionally filtered by class.
-  let sql = 'SELECT * FROM students';
-  const params = [];
-  const where = [];
-
-  if (class_id) {
-    where.push('class_id = ?');
-    params.push(class_id);
-  }
-
-  if (where.length > 0) {
-    sql += ' WHERE ' + where.join(' AND ');
-  }
-
-  sql += ' ORDER BY name';
-  db.all(sql, params, handleDbCallback(res));
 });
 
-app.post('/api/students', requireAuth, requireRole('admin'), (req, res) => {
+app.post('/api/students', requireAuth, requireRole('admin'), async (req, res) => {
   const { name, roll_number, class_id } = req.body;
   if (!name || !class_id) {
     return res.status(400).json({ error: 'Student name and class_id are required' });
@@ -341,59 +376,66 @@ app.post('/api/students', requireAuth, requireRole('admin'), (req, res) => {
     return res.status(400).json({ error: 'Invalid class_id' });
   }
 
-  // Validate class exists
-  db.get('SELECT id FROM classes WHERE id = ?', [classIdInt], (err, classRow) => {
-    if (err) {
-      console.error('Check class error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    if (!classRow) {
+  try {
+    // Validate class exists
+    const { sql: checkSql, params: checkParams } = convertPlaceholders(
+      'SELECT id FROM classes WHERE id = ?',
+      [classIdInt]
+    );
+    const checkResult = await db.query(checkSql, checkParams);
+    
+    if (checkResult.rows.length === 0) {
       return res.status(400).json({ error: 'Invalid class_id: class does not exist' });
     }
 
-    const sql = 'INSERT INTO students (name, roll_number, class_id) VALUES (?, ?, ?)';
-    db.run(sql, [name, roll_number || null, classIdInt], function (err) {
-      if (err) {
-        console.error('Add student error:', err);
-        return res.status(500).json({ error: 'Database error', details: err.message });
-      }
-      res.status(201).json({ id: this.lastID, name, roll_number: roll_number || null, class_id: classIdInt });
-    });
-  });
+    const { sql, params } = convertPlaceholders(
+      'INSERT INTO students (name, roll_number, class_id) VALUES (?, ?, ?) RETURNING id',
+      [name, roll_number || null, classIdInt]
+    );
+    const result = await db.query(sql, params);
+    res.status(201).json({ id: result.rows[0].id, name, roll_number: roll_number || null, class_id: classIdInt });
+  } catch (err) {
+    return handleDbError(err, res, 'Add student');
+  }
 });
 
 // --- Teachers ---
 // Teachers are stored in the users table with role = 'teacher'.
 // These endpoints let admins list and create teacher accounts.
-app.get('/api/teachers', requireAuth, requireRole('admin'), (req, res) => {
+app.get('/api/teachers', requireAuth, requireRole('admin'), async (req, res) => {
   const { class_id } = req.query;
 
-  let sql = `
-    SELECT u.id,
-           u.username,
-           u.display_name,
-           u.class_id,
-           u.email,
-           u.phone,
-           u.subject,
-           u.experience,
-           c.name AS class_name
-    FROM users u
-    LEFT JOIN classes c ON u.class_id = c.id
-    WHERE u.role = 'teacher'
-  `;
+  try {
+    let sql = `
+      SELECT u.id,
+             u.username,
+             u.display_name,
+             u.class_id,
+             u.email,
+             u.phone,
+             u.subject,
+             u.experience,
+             c.name AS class_name
+      FROM users u
+      LEFT JOIN classes c ON u.class_id = c.id
+      WHERE u.role = 'teacher'
+    `;
 
-  const params = [];
-  if (class_id) {
-    sql += ' AND u.class_id = ?';
-    params.push(class_id);
+    const params = [];
+    if (class_id) {
+      sql += ` AND u.class_id = $${params.length + 1}`;
+      params.push(class_id);
+    }
+
+    sql += ' ORDER BY COALESCE(u.display_name, u.username)';
+    const result = await db.query(sql, params);
+    res.json(result.rows);
+  } catch (err) {
+    return handleDbError(err, res, 'Get teachers');
   }
-
-  sql += ' ORDER BY COALESCE(u.display_name, u.username)';
-  db.all(sql, params, handleDbCallback(res));
 });
 
-app.post('/api/teachers', requireAuth, requireRole('admin'), (req, res) => {
+app.post('/api/teachers', requireAuth, requireRole('admin'), async (req, res) => {
   const { username, display_name, password, class_id, email, phone, subject, experience } = req.body;
 
   if (!username || !password) {
@@ -405,13 +447,15 @@ app.post('/api/teachers', requireAuth, requireRole('admin'), (req, res) => {
     return res.status(400).json({ error: 'Username must be between 3 and 50 characters' });
   }
 
-  // Check if username already exists
-  db.get('SELECT id FROM users WHERE username = ?', [username], async (err, existing) => {
-    if (err) {
-      console.error('Check username error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    if (existing) {
+  try {
+    // Check if username already exists
+    const { sql: checkSql, params: checkParams } = convertPlaceholders(
+      'SELECT id FROM users WHERE username = ?',
+      [username]
+    );
+    const existingResult = await db.query(checkSql, checkParams);
+    
+    if (existingResult.rows.length > 0) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
@@ -422,74 +466,66 @@ app.post('/api/teachers', requireAuth, requireRole('admin'), (req, res) => {
         return res.status(400).json({ error: 'Invalid class_id' });
       }
 
-      db.get('SELECT id FROM classes WHERE id = ?', [classIdInt], (classErr, classRow) => {
-        if (classErr) {
-          console.error('Check class error:', classErr);
-          return res.status(500).json({ error: 'Database error' });
-        }
-        if (!classRow) {
-          return res.status(400).json({ error: 'Invalid class_id: class does not exist' });
-        }
-
-        insertTeacher();
-      });
-    } else {
-      insertTeacher();
+      const { sql: classCheckSql, params: classCheckParams } = convertPlaceholders(
+        'SELECT id FROM classes WHERE id = ?',
+        [classIdInt]
+      );
+      const classResult = await db.query(classCheckSql, classCheckParams);
+      
+      if (classResult.rows.length === 0) {
+        return res.status(400).json({ error: 'Invalid class_id: class does not exist' });
+      }
     }
 
-    async function insertTeacher() {
-      const hashedPassword = await bcrypt.hash(password, 10);
-      const sql = 'INSERT INTO users (username, password, role, display_name, class_id, email, phone, subject, experience) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
-      db.run(sql, [username, hashedPassword, 'teacher', display_name || null, class_id || null, email || null, phone || null, subject || null, experience || null], function (err) {
-        if (err) {
-          console.error('Add teacher error:', err);
-          return res.status(500).json({ error: 'Database error', details: err.message });
-        }
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const { sql, params } = convertPlaceholders(
+      'INSERT INTO users (username, password, role, display_name, class_id, email, phone, subject, experience) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
+      [username, hashedPassword, 'teacher', display_name || null, class_id || null, email || null, phone || null, subject || null, experience || null]
+    );
+    const result = await db.query(sql, params);
 
-        res.status(201).json({
-          id: this.lastID,
-          username,
-          display_name: display_name || null,
-          class_id: class_id || null,
-          email: email || null,
-          phone: phone || null,
-          subject: subject || null,
-          experience: experience || null,
-        });
-      });
-    }
-  });
+    res.status(201).json({
+      id: result.rows[0].id,
+      username,
+      display_name: display_name || null,
+      class_id: class_id || null,
+      email: email || null,
+      phone: phone || null,
+      subject: subject || null,
+      experience: experience || null,
+    });
+  } catch (err) {
+    return handleDbError(err, res, 'Add teacher');
+  }
 });
 
 // --- Dashboard stats ---
 
-app.get('/api/dashboard/admin', requireAuth, requireRole('admin'), (req, res) => {
-  const sql = `
-    SELECT
-      (SELECT COUNT(*) FROM students) AS total_students,
-      (SELECT COUNT(*) FROM users WHERE role = 'teacher') AS total_teachers,
-      (SELECT COUNT(*) FROM classes) AS total_classes,
-      0 AS active_policies
-  `;
+app.get('/api/dashboard/admin', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const sql = `
+      SELECT
+        (SELECT COUNT(*) FROM students) AS total_students,
+        (SELECT COUNT(*) FROM users WHERE role = 'teacher') AS total_teachers,
+        (SELECT COUNT(*) FROM classes) AS total_classes,
+        0 AS active_policies
+    `;
 
-  db.get(sql, [], (err, row) => {
-    if (err) {
-      console.error('Admin dashboard error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-
-    const safeRow = row || {
+    const result = await db.query(sql);
+    const row = result.rows[0] || {
       total_students: 0,
       total_teachers: 0,
       total_classes: 0,
       active_policies: 0,
     };
 
-    res.json(safeRow);
-  });
+    res.json(row);
+  } catch (err) {
+    return handleDbError(err, res, 'Admin dashboard');
+  }
 });
 
-app.get('/api/dashboard/teacher', requireAuth, requireRole('teacher'), (req, res) => {
+app.get('/api/dashboard/teacher', requireAuth, requireRole('teacher'), async (req, res) => {
   const user = req.user;
   const classId = user.class_id;
 
@@ -502,23 +538,21 @@ app.get('/api/dashboard/teacher', requireAuth, requireRole('teacher'), (req, res
     });
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const { sql, params } = convertPlaceholders(
+      `SELECT
+        c.id AS class_id,
+        c.name AS class_name,
+        (SELECT COUNT(*) FROM students s WHERE s.class_id = c.id) AS student_count,
+        (SELECT COUNT(*) FROM sessions sess WHERE sess.class_id = c.id AND sess.date = ?) AS today_sessions
+      FROM classes c
+      WHERE c.id = ?`,
+      [today, classId]
+    );
 
-  const sql = `
-    SELECT
-      c.id AS class_id,
-      c.name AS class_name,
-      (SELECT COUNT(*) FROM students s WHERE s.class_id = c.id) AS student_count,
-      (SELECT COUNT(*) FROM sessions sess WHERE sess.class_id = c.id AND sess.date = ?) AS today_sessions
-    FROM classes c
-    WHERE c.id = ?
-  `;
-
-  db.get(sql, [today, classId], (err, row) => {
-    if (err) {
-      console.error('Teacher dashboard error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
+    const result = await db.query(sql, params);
+    const row = result.rows[0];
 
     if (!row) {
       return res.json({
@@ -530,47 +564,53 @@ app.get('/api/dashboard/teacher', requireAuth, requireRole('teacher'), (req, res
     }
 
     res.json(row);
-  });
+  } catch (err) {
+    return handleDbError(err, res, 'Teacher dashboard');
+  }
 });
 
 // --- Sessions ---
 // Admins can view all sessions (for reporting/management).
 // Teachers can view sessions for any class in the system (multi-class access).
 // Students remain scoped to their own class.
-app.get('/api/sessions', requireAuth, (req, res) => {
+app.get('/api/sessions', requireAuth, async (req, res) => {
   const { class_id } = req.query;
   const user = req.user;
 
-  let sql = 'SELECT s.*, c.name as class_name FROM sessions s JOIN classes c ON s.class_id = c.id';
-  const params = [];
-  const where = [];
+  try {
+    let sql = 'SELECT s.*, c.name as class_name FROM sessions s JOIN classes c ON s.class_id = c.id';
+    const params = [];
+    const where = [];
 
-  if (user.role === 'admin' || user.role === 'teacher') {
-    // Admins and teachers can optionally filter by any class_id.
-    if (class_id) {
-      where.push('s.class_id = ?');
-      params.push(class_id);
+    if (user.role === 'admin' || user.role === 'teacher') {
+      // Admins and teachers can optionally filter by any class_id.
+      if (class_id) {
+        where.push(`s.class_id = $${params.length + 1}`);
+        params.push(class_id);
+      }
+    } else if (user.role === 'student') {
+      // Students are still restricted to sessions for their own class.
+      if (!user.class_id) {
+        return res.json([]);
+      }
+      where.push(`s.class_id = $${params.length + 1}`);
+      params.push(user.class_id);
     }
-  } else if (user.role === 'student') {
-    // Students are still restricted to sessions for their own class.
-    if (!user.class_id) {
-      return res.json([]);
+
+    if (where.length > 0) {
+      sql += ' WHERE ' + where.join(' AND ');
     }
-    where.push('s.class_id = ?');
-    params.push(user.class_id);
+
+    sql += ' ORDER BY date DESC, s.id DESC';
+    const result = await db.query(sql, params);
+    res.json(result.rows);
+  } catch (err) {
+    return handleDbError(err, res, 'Get sessions');
   }
-
-  if (where.length > 0) {
-    sql += ' WHERE ' + where.join(' AND ');
-  }
-
-  sql += ' ORDER BY date DESC, s.id DESC';
-
-  db.all(sql, params, handleDbCallback(res));
 });
 
 // NOTE: Only teachers create classroom sessions. Admin can manage/view but not create.
-app.post('/api/sessions', requireAuth, requireRole('teacher'), (req, res) => {
+app.post('/api/sessions', requireAuth, requireRole('teacher'), async (req, res) => {
   const user = req.user;
   const { class_id, date, topic } = req.body;
   if (!class_id || !date) {
@@ -593,35 +633,33 @@ app.post('/api/sessions', requireAuth, requireRole('teacher'), (req, res) => {
     return res.status(400).json({ error: 'Invalid date value' });
   }
 
-  // Validate class exists
-  db.get('SELECT id FROM classes WHERE id = ?', [classIdInt], (err, classRow) => {
-    if (err) {
-      console.error('Check class error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    if (!classRow) {
+  try {
+    // Validate class exists
+    const { sql: checkSql, params: checkParams } = convertPlaceholders(
+      'SELECT id FROM classes WHERE id = ?',
+      [classIdInt]
+    );
+    const checkResult = await db.query(checkSql, checkParams);
+    
+    if (checkResult.rows.length === 0) {
       return res.status(400).json({ error: 'Invalid class_id: class does not exist' });
     }
 
-    insertSession();
-
-    function insertSession() {
-      const sql = 'INSERT INTO sessions (class_id, date, topic) VALUES (?, ?, ?)';
-      db.run(sql, [classIdInt, date, topic || null], function (err) {
-        if (err) {
-          console.error('Create session error:', err);
-          return res.status(500).json({ error: 'Database error', details: err.message });
-        }
-        res.status(201).json({ id: this.lastID, class_id: classIdInt, date, topic: topic || null });
-      });
-    }
-  });
+    const { sql, params } = convertPlaceholders(
+      'INSERT INTO sessions (class_id, date, topic) VALUES (?, ?, ?) RETURNING id',
+      [classIdInt, date, topic || null]
+    );
+    const result = await db.query(sql, params);
+    res.status(201).json({ id: result.rows[0].id, class_id: classIdInt, date, topic: topic || null });
+  } catch (err) {
+    return handleDbError(err, res, 'Create session');
+  }
 });
 
 // --- Attendance ---
 // Mark attendance for one or many students
 // NOTE: Only teachers can mark attendance. Admins can view reports but cannot mark.
-app.post('/api/attendance', requireAuth, requireRole('teacher'), (req, res) => {
+app.post('/api/attendance', requireAuth, requireRole('teacher'), async (req, res) => {
   const { session_id, records } = req.body;
 
   if (!session_id || !Array.isArray(records) || records.length === 0) {
@@ -634,16 +672,23 @@ app.post('/api/attendance', requireAuth, requireRole('teacher'), (req, res) => {
     return res.status(400).json({ error: 'Invalid session_id' });
   }
 
-  db.get('SELECT class_id FROM sessions WHERE id = ?', [sessionIdInt], (err, sessionRow) => {
-    if (err) {
-      console.error('Lookup session error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    if (!sessionRow) {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Get session class_id
+    const { sql: sessionSql, params: sessionParams } = convertPlaceholders(
+      'SELECT class_id FROM sessions WHERE id = ?',
+      [sessionIdInt]
+    );
+    const sessionResult = await client.query(sessionSql, sessionParams);
+    
+    if (sessionResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Invalid session_id' });
     }
 
-    const sessionClassId = sessionRow.class_id;
+    const sessionClassId = sessionResult.rows[0].class_id;
 
     // Validate all student_ids belong to the session's class
     const studentIds = records
@@ -651,6 +696,7 @@ app.post('/api/attendance', requireAuth, requireRole('teacher'), (req, res) => {
       .filter(id => !isNaN(id) && id > 0);
     
     if (studentIds.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'No valid student_ids provided' });
     }
 
@@ -658,116 +704,76 @@ app.post('/api/attendance', requireAuth, requireRole('teacher'), (req, res) => {
     const validStatuses = ['present', 'absent'];
     const invalidRecords = records.filter(r => !validStatuses.includes(String(r.status).toLowerCase()));
     if (invalidRecords.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Invalid status values. Must be "present" or "absent"' });
     }
 
     // Check all students belong to the session's class
-    const placeholders = studentIds.map(() => '?').join(',');
-    const checkSql = `SELECT id FROM students WHERE id IN (${placeholders}) AND class_id = ?`;
-    db.all(checkSql, [...studentIds, sessionClassId], (checkErr, validStudents) => {
-      if (checkErr) {
-        console.error('Student validation error:', checkErr);
-        return res.status(500).json({ error: 'Database error' });
-      }
+    const placeholders = studentIds.map((_, i) => `$${i + 1}`).join(',');
+    const checkSql = `SELECT id FROM students WHERE id IN (${placeholders}) AND class_id = $${studentIds.length + 1}`;
+    const checkResult = await client.query(checkSql, [...studentIds, sessionClassId]);
+    
+    if (checkResult.rows.length !== studentIds.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Some students do not belong to this session\'s class' });
+    }
 
-      if (validStudents.length !== studentIds.length) {
-        return res.status(400).json({ error: 'Some students do not belong to this session\'s class' });
-      }
-
-      // Use INSERT ... ON CONFLICT to preserve marked_at timestamp on updates
-      // This requires SQLite 3.24+. For older versions, falls back to INSERT OR REPLACE behavior
-      let upsertStmt;
-      try {
-        // Try to use ON CONFLICT syntax (SQLite 3.24+)
-        upsertStmt = db.prepare(`
-          INSERT INTO attendance (session_id, student_id, status, marked_at)
-          VALUES (?, ?, ?, datetime('now'))
-          ON CONFLICT(session_id, student_id) 
-          DO UPDATE SET status = excluded.status
-        `);
-      } catch (prepareErr) {
-        // Fallback to INSERT OR REPLACE if ON CONFLICT not supported
-        console.warn('ON CONFLICT not supported, using INSERT OR REPLACE (marked_at will be reset on updates)');
-        upsertStmt = db.prepare('INSERT OR REPLACE INTO attendance (session_id, student_id, status) VALUES (?, ?, ?)');
-      }
-      
-      let hasError = false;
-      let completed = 0;
-      const validRecords = records.filter(rec => {
-        const studentId = parseInt(rec.student_id, 10);
-        const status = String(rec.status).toLowerCase();
-        return !isNaN(studentId) && studentId > 0 && validStatuses.includes(status);
-      });
-      const totalRecords = validRecords.length;
-
-      if (totalRecords === 0) {
-        upsertStmt.finalize();
-        return res.status(400).json({ error: 'No valid records to save' });
-      }
-
-      db.serialize(() => {
-        db.run('BEGIN TRANSACTION', (beginErr) => {
-          if (beginErr) {
-            console.error('Begin transaction error:', beginErr);
-            upsertStmt.finalize();
-            return res.status(500).json({ error: 'Failed to start transaction' });
-          }
-
-          for (const rec of validRecords) {
-            const studentId = parseInt(rec.student_id, 10);
-            const status = String(rec.status).toLowerCase();
-
-            upsertStmt.run([sessionIdInt, studentId, status], (runErr) => {
-              completed++;
-              
-              if (runErr && !hasError) {
-                hasError = true;
-                console.error('Attendance insert error:', runErr);
-                db.run('ROLLBACK', () => {
-                  upsertStmt.finalize();
-                  return res.status(500).json({ error: 'Failed to save attendance', details: runErr.message });
-                });
-                return;
-              }
-
-              if (!hasError && completed === totalRecords) {
-                db.run('COMMIT', (commitErr) => {
-                  upsertStmt.finalize();
-                  
-                  if (commitErr) {
-                    console.error('Commit error:', commitErr);
-                    return res.status(500).json({ error: 'Failed to save attendance', details: commitErr.message });
-                  }
-                  
-                  res.status(201).json({ message: 'Attendance saved successfully' });
-                });
-              }
-            });
-          }
-        });
-      });
+    // Filter valid records
+    const validRecords = records.filter(rec => {
+      const studentId = parseInt(rec.student_id, 10);
+      const status = String(rec.status).toLowerCase();
+      return !isNaN(studentId) && studentId > 0 && validStatuses.includes(status);
     });
-  });
+
+    if (validRecords.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No valid records to save' });
+    }
+
+    // Use INSERT ... ON CONFLICT to preserve marked_at timestamp on updates
+    const upsertSql = `
+      INSERT INTO attendance (session_id, student_id, status, marked_at)
+      VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+      ON CONFLICT(session_id, student_id) 
+      DO UPDATE SET status = EXCLUDED.status
+    `;
+
+    for (const rec of validRecords) {
+      const studentId = parseInt(rec.student_id, 10);
+      const status = String(rec.status).toLowerCase();
+      await client.query(upsertSql, [sessionIdInt, studentId, status]);
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ message: 'Attendance saved successfully' });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    return handleDbError(err, res, 'Save attendance');
+  } finally {
+    client.release();
+  }
 });
 
 // Get attendance by session
-app.get('/api/attendance/by-session', requireAuth, requireRole('admin', 'teacher'), (req, res) => {
+app.get('/api/attendance/by-session', requireAuth, requireRole('admin', 'teacher'), async (req, res) => {
   const { session_id } = req.query;
   if (!session_id) {
     return res.status(400).json({ error: 'session_id is required' });
   }
 
-  db.get('SELECT class_id FROM sessions WHERE id = ?', [session_id], (err, sessionRow) => {
-    if (err) {
-      console.error('Lookup session error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    if (!sessionRow) {
+  try {
+    const { sql: checkSql, params: checkParams } = convertPlaceholders(
+      'SELECT class_id FROM sessions WHERE id = ?',
+      [session_id]
+    );
+    const checkResult = await db.query(checkSql, checkParams);
+    
+    if (checkResult.rows.length === 0) {
       return res.status(400).json({ error: 'Invalid session_id' });
     }
 
-    const sql = `
-      SELECT a.id, a.status, a.marked_at,
+    const { sql, params } = convertPlaceholders(
+      `SELECT a.id, a.status, a.marked_at,
              s.id AS student_id, s.name AS student_name, s.roll_number,
              sess.date, sess.topic, c.name AS class_name
       FROM attendance a
@@ -775,16 +781,19 @@ app.get('/api/attendance/by-session', requireAuth, requireRole('admin', 'teacher
       JOIN sessions sess ON a.session_id = sess.id
       JOIN classes c ON sess.class_id = c.id
       WHERE a.session_id = ?
-      ORDER BY s.name
-    `;
-
-    db.all(sql, [session_id], handleDbCallback(res));
-  });
+      ORDER BY s.name`,
+      [session_id]
+    );
+    const result = await db.query(sql, params);
+    res.json(result.rows);
+  } catch (err) {
+    return handleDbError(err, res, 'Get attendance by session');
+  }
 });
 
 // --- Reports ---
 // Attendance for a single student across sessions
-app.get('/api/reports/by-student', requireAuth, (req, res) => {
+app.get('/api/reports/by-student', requireAuth, async (req, res) => {
   const { student_id } = req.query;
   if (!student_id) {
     return res.status(400).json({ error: 'student_id is required' });
@@ -797,19 +806,24 @@ app.get('/api/reports/by-student', requireAuth, (req, res) => {
 
   const user = req.user;
 
-  const runQuery = () => {
-    const sql = `
-      SELECT a.status, a.marked_at,
-             sess.id AS session_id, sess.date, sess.topic,
-             c.id AS class_id, c.name AS class_name
-      FROM attendance a
-      JOIN sessions sess ON a.session_id = sess.id
-      JOIN classes c ON sess.class_id = c.id
-      WHERE a.student_id = ?
-      ORDER BY sess.date DESC, sess.id DESC
-    `;
-
-    db.all(sql, [studentIdInt], handleDbCallback(res));
+  const runQuery = async () => {
+    try {
+      const { sql, params } = convertPlaceholders(
+        `SELECT a.status, a.marked_at,
+               sess.id AS session_id, sess.date, sess.topic,
+               c.id AS class_id, c.name AS class_name
+        FROM attendance a
+        JOIN sessions sess ON a.session_id = sess.id
+        JOIN classes c ON sess.class_id = c.id
+        WHERE a.student_id = ?
+        ORDER BY sess.date DESC, sess.id DESC`,
+        [studentIdInt]
+      );
+      const result = await db.query(sql, params);
+      return res.json(result.rows);
+    } catch (err) {
+      return handleDbError(err, res, 'Get student report');
+    }
   };
 
   if (user.role === 'admin') {
@@ -831,7 +845,7 @@ app.get('/api/reports/by-student', requireAuth, (req, res) => {
 });
 
 // Summary by class: per-student counts
-app.get('/api/reports/summary-by-class', requireAuth, (req, res) => {
+app.get('/api/reports/summary-by-class', requireAuth, async (req, res) => {
   const { class_id } = req.query;
   if (!class_id) {
     return res.status(400).json({ error: 'class_id is required' });
@@ -848,28 +862,33 @@ app.get('/api/reports/summary-by-class', requireAuth, (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  // FIXED: Only count sessions where attendance was actually marked
-  const sql = `
-    SELECT 
-      st.id AS student_id,
-      st.name AS student_name,
-      st.roll_number,
-      COUNT(DISTINCT a.session_id) AS total,
-      SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS presents,
-      (COUNT(DISTINCT a.session_id) - SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)) AS absents
-    FROM students st
-    LEFT JOIN attendance a ON a.student_id = st.id
-    LEFT JOIN sessions sess ON sess.id = a.session_id AND sess.class_id = st.class_id
-    WHERE st.class_id = ?
-    GROUP BY st.id, st.name, st.roll_number
-    ORDER BY st.name
-  `;
-
-  db.all(sql, [classIdInt], handleDbCallback(res));
+  try {
+    // FIXED: Only count sessions where attendance was actually marked
+    const { sql, params } = convertPlaceholders(
+      `SELECT 
+        st.id AS student_id,
+        st.name AS student_name,
+        st.roll_number,
+        COUNT(DISTINCT a.session_id) AS total,
+        SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS presents,
+        (COUNT(DISTINCT a.session_id) - SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)) AS absents
+      FROM students st
+      LEFT JOIN attendance a ON a.student_id = st.id
+      LEFT JOIN sessions sess ON sess.id = a.session_id AND sess.class_id = st.class_id
+      WHERE st.class_id = ?
+      GROUP BY st.id, st.name, st.roll_number
+      ORDER BY st.name`,
+      [classIdInt]
+    );
+    const result = await db.query(sql, params);
+    res.json(result.rows);
+  } catch (err) {
+    return handleDbError(err, res, 'Get class summary');
+  }
 });
 
 // Export: Student report (CSV / PDF)
-app.get('/api/reports/by-student/export', requireAuth, (req, res) => {
+app.get('/api/reports/by-student/export', requireAuth, async (req, res) => {
   const { student_id, format = 'csv' } = req.query;
   if (!student_id) {
     return res.status(400).json({ error: 'student_id is required' });
@@ -877,23 +896,21 @@ app.get('/api/reports/by-student/export', requireAuth, (req, res) => {
 
   const user = req.user;
 
-  const runQuery = () => {
-    const sql = `
-      SELECT a.status, a.marked_at,
-             sess.id AS session_id, sess.date, sess.topic,
-             c.id AS class_id, c.name AS class_name
-      FROM attendance a
-      JOIN sessions sess ON a.session_id = sess.id
-      JOIN classes c ON sess.class_id = c.id
-      WHERE a.student_id = ?
-      ORDER BY sess.date DESC, sess.id DESC
-    `;
-
-    db.all(sql, [student_id], (err, rows) => {
-      if (err) {
-        console.error('Student report export error:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
+  const runQuery = async () => {
+    try {
+      const { sql, params } = convertPlaceholders(
+        `SELECT a.status, a.marked_at,
+               sess.id AS session_id, sess.date, sess.topic,
+               c.id AS class_id, c.name AS class_name
+        FROM attendance a
+        JOIN sessions sess ON a.session_id = sess.id
+        JOIN classes c ON sess.class_id = c.id
+        WHERE a.student_id = ?
+        ORDER BY sess.date DESC, sess.id DESC`,
+        [student_id]
+      );
+      const result = await db.query(sql, params);
+      const rows = result.rows;
 
       if (format === 'pdf') {
         return sendStudentReportPdf(res, rows, {
@@ -902,7 +919,9 @@ app.get('/api/reports/by-student/export', requireAuth, (req, res) => {
       }
 
       return sendStudentReportCsv(res, rows, `student-${student_id}-report`);
-    });
+    } catch (err) {
+      return handleDbError(err, res, 'Export student report');
+    }
   };
 
   if (user.role === 'admin') {
@@ -928,7 +947,7 @@ app.get('/api/reports/by-student/export', requireAuth, (req, res) => {
 });
 
 // Export: Class summary (CSV / PDF)
-app.get('/api/reports/summary-by-class/export', requireAuth, (req, res) => {
+app.get('/api/reports/summary-by-class/export', requireAuth, async (req, res) => {
   const { class_id, format = 'csv' } = req.query;
   if (!class_id) {
     return res.status(400).json({ error: 'class_id is required' });
@@ -939,28 +958,27 @@ app.get('/api/reports/summary-by-class/export', requireAuth, (req, res) => {
   if (user.role === 'student') {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  const sql = `
-    SELECT st.id AS student_id,
-           st.name AS student_name,
-           st.roll_number,
-           SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS presents,
-           COUNT(sess.id) AS total,
-           (COUNT(sess.id) - SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)) AS absents
-    FROM students st
-    LEFT JOIN sessions sess ON sess.class_id = st.class_id
-    LEFT JOIN attendance a
-           ON a.student_id = st.id
-          AND a.session_id = sess.id
-    WHERE st.class_id = ?
-    GROUP BY st.id, st.name, st.roll_number
-    ORDER BY st.name
-  `;
 
-  db.all(sql, [class_id], (err, rows) => {
-    if (err) {
-      console.error('Class summary export error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
+  try {
+    const { sql, params } = convertPlaceholders(
+      `SELECT st.id AS student_id,
+             st.name AS student_name,
+             st.roll_number,
+             SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS presents,
+             COUNT(sess.id) AS total,
+             (COUNT(sess.id) - SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)) AS absents
+      FROM students st
+      LEFT JOIN sessions sess ON sess.class_id = st.class_id
+      LEFT JOIN attendance a
+             ON a.student_id = st.id
+            AND a.session_id = sess.id
+      WHERE st.class_id = ?
+      GROUP BY st.id, st.name, st.roll_number
+      ORDER BY st.name`,
+      [class_id]
+    );
+    const result = await db.query(sql, params);
+    const rows = result.rows;
 
     if (format === 'pdf') {
       return sendClassSummaryPdf(res, rows, {
@@ -969,7 +987,9 @@ app.get('/api/reports/summary-by-class/export', requireAuth, (req, res) => {
     }
 
     return sendClassSummaryCsv(res, rows, `class-${class_id}-summary`);
-  });
+  } catch (err) {
+    return handleDbError(err, res, 'Export class summary');
+  }
 });
 
 // Fallback route - serve index
